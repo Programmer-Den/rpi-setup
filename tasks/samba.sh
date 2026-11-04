@@ -78,7 +78,7 @@ samba_check_path() {
   [[ "$d" != *"/../"* && "$d" != *"/.." ]] || die "SAMBA_SHARE_PATH cannot contain '..' (got '$d')"
   while [[ "$d" == */ && "$d" != / ]]; do d="${d%/}"; done
   case "$d" in
-    /|/etc|/etc/*|/usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/lib|/lib/*|/lib64|/boot|/boot/*|/proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/run|/run/*|/root|/root/*|/var|/var/lib|/var/lib/*|/opt|/home|/tmp)
+    /|/etc|/etc/*|/usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/lib|/lib/*|/lib64|/boot|/boot/*|/proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/run|/run/*|/root|/var|/var/lib|/var/lib/*|/opt|/home|/tmp)
       die "SAMBA_SHARE_PATH cannot be a system folder like $d; use a folder of its own, e.g. /srv/share or /mnt/usb/share" ;;
   esac
 }
