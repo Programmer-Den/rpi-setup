@@ -153,11 +153,12 @@ runner_download() {
   file="$(mktemp)"
   info "Downloading $url"
   curl -fsSL -o "$file" "$url" || { rm -f "$file"; die "Download failed: $url"; }
-  if [[ "$digest" == sha256:* ]]; then
-    echo "${digest#sha256:}  $file" | sha256sum -c --quiet - || { rm -f "$file"; die "Checksum mismatch for $url"; }
-  else
-    warn "GitHub listed no checksum for $url; it was downloaded over HTTPS but not verified."
+  # The runner runs your workflows; never install one that was not checked.
+  if [[ "$digest" != sha256:* ]]; then
+    rm -f "$file"
+    die "GitHub listed no checksum for $url, so it cannot be verified. Try again later, or unpack a release you checked yourself into $dir and re-run."
   fi
+  echo "${digest#sha256:}  $file" | sha256sum -c --quiet - || { rm -f "$file"; die "Checksum mismatch for $url"; }
   tar -xzf "$file" -C "$dir"
   rm -f "$file"
   chown -R "$RPI_RUNNER_USER:$RPI_RUNNER_USER" "$dir"

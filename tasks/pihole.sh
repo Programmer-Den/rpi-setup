@@ -37,8 +37,8 @@ run_pihole() {
     say "Web admin: $(pihole_admin_url)"
     return
   fi
-  warn 'The Pi-hole installer uses "curl ... | bash" which has security implications.'
-  warn 'Review the script at https://install.pi-hole.net before proceeding.'
+  warn 'The Pi-hole installer is downloaded from https://install.pi-hole.net and run as root (like "curl ... | bash").'
+  warn 'Review it there first, or set PIHOLE_DOCKER=yes to run Pi-hole from its image instead.'
 
   if in_container; then
     warn 'Pi-hole needs port 53 and is not supported in container environments; skipping'
@@ -48,7 +48,15 @@ run_pihole() {
   iface="$(pihole_iface)"
   pihole_preseed "$iface" "${dns[@]}"
   info 'Running the official Pi-hole installer unattended (settings from config/rpi-setup.env)'
-  curl -fsSL https://install.pi-hole.net | bash /dev/stdin --unattended
+  # Saved to a file first, so a download cut short never runs half a script
+  # and the log records exactly which script ran.
+  local installer
+  installer="$(mktemp)"
+  curl -fsSL -o "$installer" https://install.pi-hole.net ||
+    { rm -f "$installer"; die 'Could not download the Pi-hole installer from https://install.pi-hole.net; check the network and re-run'; }
+  info "Pi-hole installer SHA-256: $(sha256sum "$installer" | cut -d' ' -f1)"
+  bash "$installer" --unattended || { rm -f "$installer"; die 'The Pi-hole installer failed; see its output above'; }
+  rm -f "$installer"
 
   if ! command -v pihole >/dev/null 2>&1; then
     warn 'Pi-hole installer did not complete'

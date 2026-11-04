@@ -194,7 +194,7 @@ Docker is installed first if it is missing.
 - nginx falls back to port 8080 only when `PIHOLE_WEB_PORT=80` keeps Pi-hole
   on port 80, or a web server that rpi-setup did not install holds it.
 - With the `firewall` task, the port is open only to `FIREWALL_ALLOW_FROM`
-  when that is set.
+  (by default this Pi's own networks).
 - Turn it off with `sudo systemctl disable --now nginx` (and the list with
   `sudo systemctl disable --now rpi-setup-web-links.timer`). The update
   check goes away with `WEB_UPDATES=no`.
@@ -207,5 +207,8 @@ Docker is installed first if it is missing.
 - If nginx's default site `/etc/nginx/sites-available/default` is missing
   (removed for sites of your own), the task stops and says how to restore it;
   the start page is served from that site.
-- Anyone who can open the page sees the container names, images and ports.
-  The `firewall` task keeps the page to `FIREWALL_ALLOW_FROM`.
+- The page has no login. Anyone who can open it sees the container names,
+  images and ports, the updates still to install and, with the `teamspeak`
+  task, who was online and when. The `firewall` task keeps the page to
+  `FIREWALL_ALLOW_FROM`; the "Same connection" list of TeamSpeak visitors is
+  only there with `TEAMSPEAK_USAGE_CONNECTIONS=yes`.

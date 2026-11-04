@@ -58,12 +58,16 @@ unset -f docker
 assign_uid() { echo 12345; }
 chown() { :; }
 RPI_SETUP_ROOT="$ROOT"
-svc="$(teamspeak_usage_service "$TMP/ts" 030 secretpw 09988 kims-den.example 443)"
+svc="$(teamspeak_usage_service "$TMP/ts" 030 secretpw 09988 kims-den.example 443 yes)"
 svc_default="$(teamspeak_usage_service "$TMP/ts" 30 secretpw)"
 unset -f assign_uid chown
 assert_contains "usage: builds the logger with its UID" 'UID: "12345"' "$svc"
 assert_contains "usage: days as a plain number" 'USAGE_DAYS: "30"' "$svc"
-assert_contains "usage: gets the serveradmin password" 'TS_QUERY_PASSWORD: "secretpw"' "$svc"
+assert_contains "usage: reads the serveradmin password from secrets.env" 'env_file: ./secrets.env' "$svc"
+assert_lacks "usage: the password is not in the compose file" "secretpw" "$svc"
+assert_contains "usage: same-connection list when asked for" 'TS_CONNECTIONS: "yes"' "$svc"
+assert_contains "usage: no same-connection list by default" 'TS_CONNECTIONS: "no"' "$svc_default"
+assert_fails "usage: needs a password" teamspeak_usage_service "$TMP/ts" 30 ""
 assert_contains "usage: gets the voice port on the Pi" 'TS_VOICE_PORT: "9988"' "$svc"
 assert_contains "usage: gets the internet address" 'TS_PUBLIC_ADDRESS: "kims-den.example"' "$svc"
 assert_contains "usage: gets the forwarded port" 'TS_PUBLIC_PORT: "443"' "$svc"
@@ -92,6 +96,13 @@ if [[ "$arch" == amd64 || "$arch" == arm64 ]]; then
   assert_contains "run: the logger's login is looked for in this run's log only" \
     "docker logs --since $(date -u +%Y-%m-%dT)" "$(cat "$TMP/docker.log")"
   assert_contains "run: the server is up" "TeamSpeak 6 server ready at 192.168.60.9:9987" "$out"
+  assert_lacks "run: no password in the compose file" "pw-from-store" "$compose"
+  assert_contains "run: the server reads secrets.env" $'    env_file: ./secrets.env\n    ports:' "$server"
+  assert_eq "run: secrets.env holds the password for both, root only" \
+    $'TSSERVER_QUERY_ADMIN_PASSWORD=pw-from-store\nTS_QUERY_PASSWORD=pw-from-store 600' \
+    "$(cat "$TMP/opt/teamspeak/secrets.env") $(stat -c %a "$TMP/opt/teamspeak/secrets.env")"
+  assert_lacks "run: the web query is off by default" "TSSERVER_QUERY_HTTP_ENABLED" "$server"
+  assert_lacks "run: ... and its port is not published" "10080:10080" "$server"
 else
   skip "run: the whole task (needs an amd64 or arm64 dpkg)"
 fi
@@ -158,7 +169,7 @@ while IFS= read -r cmd; do
 done
 EOF
   printf '203.0.113.7\n' >"$TMP/myip"
-  USAGE_DATA="$data" TS_SSH_CMD="bash $TMP/fake1" TS_VOICE_PORT=9988 TS_PUBLIC_ADDRESS='' \
+  USAGE_DATA="$data" TS_SSH_CMD="bash $TMP/fake1" TS_VOICE_PORT=9988 TS_PUBLIC_ADDRESS='' TS_CONNECTIONS=yes \
     TS_PUBLIC_IP_URLS="file://$TMP/no-such-file file://$TMP/myip" timeout 2 python3 -B "$bot" 2>/dev/null || true
   assert_eq "bot: looks up the public IP (the first service that answers), with the voice port" \
     "203.0.113.7 203.0.113.7 9988 9988 True" "$(python3 -c '
@@ -215,6 +226,7 @@ EOF
   assert_eq "bot: a visit that ended while it was away is closed on reconnect" \
     $'Anna B|1\nBob' "$(python3 -c 'import json,sys; [print(json.loads(l)["nick"]) for l in open(sys.argv[1])]' "$data/sessions.jsonl" 2>&1)"
   assert_contains "bot: who is online now" '"online":[{"nick":"Carl"' "$(USAGE_DATA="$data" python3 "$bot" --summary)"
+  assert_contains "bot: no same-connection list by default" '"connections":[]' "$(USAGE_DATA="$data" python3 "$bot" --summary)"
 
   # How many were online at once: A from before the 7 days until +50, B from
   # +10 to +60, C from +60 (B's end, no change) to +70, D online since +65.

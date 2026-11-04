@@ -28,6 +28,9 @@ or `sudo bash check.sh`.
   `/usr/share/keyrings/azlux-archive-keyring.gpg`, list in
   `/etc/apt/sources.list.d/azlux.list`), so `apt-get upgrade` and `update.sh`
   keep log2ram current, and installs `log2ram` and `rsync`.
+- `/etc/apt/preferences.d/rpi-setup-azlux`, which lets apt take only
+  `log2ram` from that repository, so it can never replace a system package
+  (such as `openssh-server` or `sudo`) with its own version.
 - `/etc/log2ram.conf`: `SIZE` from `LOG2RAM_SIZE` and `NOTIFICATION=false`
   (a Pi has no mail setup; `MAIL=false` on log2ram before 1.7); the
   package's other defaults stay.

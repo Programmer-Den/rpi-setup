@@ -57,6 +57,28 @@ SSHD_T='port 22'
 assert_eq "sshd ports: all sources, deduplicated" "22 2222 " "$(firewall_sshd_ports)"
 unset -f sshd ss systemctl
 
+# --- firewall_lan_cidrs and firewall_allow_from (ip stubbed) -------------------------
+IP4='' IP6='' IP6ALL=''
+ip() {
+  case "$*" in
+    "-o -4 route show proto kernel scope link") printf '%s\n' "$IP4" ;;
+    "-o -6 route show proto kernel") printf '%s\n' "$IP6" ;;
+    "-o -6 route show") printf '%s\n' "$IP6ALL" ;;
+  esac
+}
+assert_eq "lan cidrs: nothing found" "" "$(firewall_lan_cidrs)"
+IP4=$'192.168.1.0/24 dev eth0 proto kernel scope link src 192.168.1.10\n172.17.0.0/16 dev docker0 proto kernel scope link src 172.17.0.1\n172.18.0.0/16 dev br-1a2b proto kernel scope link src 172.18.0.1\n10.8.0.0/24 dev wlan0 proto kernel scope link src 10.8.0.2'
+assert_eq "lan cidrs: IPv4 without Docker networks" "192.168.1.0/24 10.8.0.0/24" "$(firewall_lan_cidrs)"
+IP6=$'2001:db8:1::/64 dev eth0 proto kernel metric 256 pref medium\nfe80::/64 dev eth0 proto kernel metric 256 pref medium\nfd00:dead::/64 dev docker0 proto kernel metric 256'
+IP6ALL='fe80::/64 dev eth0 proto kernel metric 256 pref medium'
+assert_eq "lan cidrs: IPv6 prefixes, link-local and ULA" "192.168.1.0/24 10.8.0.0/24 2001:db8:1::/64 fe80::/10 fc00::/7" "$(firewall_lan_cidrs)"
+assert_eq "allow from: any is anyone" "" "$(firewall_allow_from any 2>/dev/null)"
+assert_eq "allow from: ANY is anyone" "" "$(firewall_allow_from ANY 2>/dev/null)"
+assert_eq "allow from: a subnet as given" "10.0.0.0/8" "$(firewall_allow_from 10.0.0.0/8 2>/dev/null)"
+assert_eq "allow from: empty is this Pi's networks" "192.168.1.0/24 10.8.0.0/24 2001:db8:1::/64 fe80::/10 fc00::/7" "$(firewall_allow_from '' 2>/dev/null)"
+assert_fails "allow from: bad value" firewall_allow_from lan
+unset -f ip
+
 # --- firewall_ports_of ------------------------------------------------------------
 assert_eq "ports_of: tcp, deduplicated" "22, 80, 1000-2000" \
   "$(firewall_ports_of tcp '22/tcp 80/tcp 53/udp 80/tcp 1000-2000/tcp')"
@@ -68,18 +90,27 @@ rs="$(firewall_ruleset "22" "53/tcp 53/udp 445/tcp" "80/tcp 19999/tcp" "")"
 assert_contains "ruleset: own table only" "delete table inet rpi_setup" "$rs"
 assert_contains "ruleset: drop policy" "policy drop;" "$rs"
 assert_contains "ruleset: established" "ct state established,related accept" "$rs"
-assert_contains "ruleset: tailscale0" 'iifname "tailscale0" accept' "$rs"
+assert_lacks "ruleset: no tailscale0 rule without Tailscale" "tailscale0" "$rs"
+assert_contains "ruleset: containers reach only DNS on the host" 'iifname "br-*" meta l4proto { tcp, udp } th dport 53 accept' "$rs"
+assert_lacks "ruleset: containers are not trusted" 'iifname "docker0" accept' "$rs"
+assert_lacks "ruleset: no forward chain without allow-from" "chain forward" "$rs"
+assert_contains "ruleset: tailscale0 when Tailscale is installed" 'iifname "tailscale0" accept' "$(firewall_ruleset 22 "" "" "" "" 1)"
 assert_contains "ruleset: ssh" 'tcp dport { 22 } accept comment "SSH"' "$rs"
 assert_contains "ruleset: no allow-from opens web ports to all" "tcp dport { 53, 445, 80, 19999 } accept" "$rs"
 assert_contains "ruleset: udp" "udp dport { 53 } accept" "$rs"
 assert_lacks "ruleset: no saddr rule without allow-from" "saddr" "$rs"
 assert_lacks "ruleset: never flushes other tables" "flush ruleset" "$rs"
 
-rs="$(firewall_ruleset "22 2222" "53/udp 80/tcp" "80/tcp 19999/tcp" "192.168.1.0/24 fd00::/8")"
+rs="$(firewall_ruleset "22 2222" "53/udp 80/tcp" "80/tcp 19999/tcp 9393/tcp" "192.168.1.0/24 fd00::/8" "9393/tcp")"
 assert_contains "ruleset: several ssh ports" 'tcp dport { 22, 2222 } accept comment "SSH"' "$rs"
 assert_contains "ruleset: open tcp" "tcp dport { 80 } accept" "$rs"
-assert_contains "ruleset: v4 web rule" 'ip saddr { 192.168.1.0/24 } tcp dport { 19999 } accept' "$rs"
-assert_contains "ruleset: v6 web rule" 'ip6 saddr { fd00::/8 } tcp dport { 19999 } accept' "$rs"
+assert_contains "ruleset: v4 web rule" 'ip saddr { 192.168.1.0/24 } tcp dport { 19999, 9393 } accept' "$rs"
+assert_contains "ruleset: v6 web rule" 'ip6 saddr { fd00::/8 } tcp dport { 19999, 9393 } accept' "$rs"
+assert_contains "ruleset: forward chain before Docker's" "type filter hook forward priority filter - 1; policy accept;" "$rs"
+assert_contains "ruleset: Docker port limited for IPv4" 'meta nfproto ipv4 ct status dnat meta l4proto tcp ct original proto-dst { 9393 } ct original ip saddr != { 192.168.1.0/24 } drop' "$rs"
+assert_contains "ruleset: Docker port limited for IPv6" 'meta nfproto ipv6 ct status dnat meta l4proto tcp ct original proto-dst { 9393 } ct original ip6 saddr != { fd00::/8 } drop' "$rs"
+rs="$(firewall_ruleset "22" "" "9393/tcp" "192.168.1.0/24" "9393/tcp")"
+assert_contains "ruleset: Docker port without an IPv6 subnet is closed for IPv6" 'meta nfproto ipv6 ct status dnat meta l4proto tcp ct original proto-dst { 9393 } drop' "$rs"
 
 rs="$(firewall_ruleset "22" "" "" "")"
 assert_lacks "ruleset: no empty sets" "{ }" "$rs"
@@ -105,9 +136,9 @@ if [[ -e /opt/netalertx/docker-compose.yml || -e /opt/teamspeak/docker-compose.y
   skip "firewall_service_ports: this machine has NetAlertX, TeamSpeak or Tailscale installed"
 else
   out="$(firewall_service_ports)"
-  assert_contains "services: pihole dns udp" "53/udp open pihole-dns" "$out"
-  assert_contains "services: pihole web 80" "80/tcp web pihole-web" "$out"
-  assert_contains "services: pihole web 443" "443/tcp web pihole-web" "$out"
+  assert_contains "services: pihole dns udp" "53/udp lan pihole-dns" "$out"
+  assert_contains "services: pihole web 80" "80/tcp lan pihole-web" "$out"
+  assert_contains "services: pihole web 443" "443/tcp lan pihole-web" "$out"
   assert_lacks "services: no DHCP when off" "67/udp" "$out"
 
   FAKE_DHCP=true
@@ -115,12 +146,12 @@ else
 
   FAKE_FTL_PORT="" FAKE_DHCP=false
   printf "PIHOLE_WEB_PORT='8081'\n" >"$RPI_SETUP_CONFIG_DIR/local/pihole.env"
-  assert_contains "services: pihole web port from settings" "8081/tcp web pihole-web" "$(firewall_service_ports)"
+  assert_contains "services: pihole web port from settings" "8081/tcp lan pihole-web" "$(firewall_service_ports)"
 
   unset -f pihole-FTL
   FAKE_PKGS="samba"
   out="$(firewall_service_ports)"
-  assert_contains "services: samba 445" "445/tcp open samba" "$out"
+  assert_contains "services: samba 445" "445/tcp lan samba" "$out"
   assert_lacks "services: no pihole when absent" "pihole" "$out"
 
   # Tasks in their containers (<TASK>_DOCKER=yes): nothing installed natively.
@@ -138,15 +169,15 @@ else
     esac
   }
   out="$(RPI_SETUP_CONTAINER_ROOT="$ctr" firewall_service_ports)"
-  assert_contains "containers: pihole dns" "53/udp open pihole-dns" "$out"
-  assert_contains "containers: pihole web port from FTL in the container" "8091/tcp web pihole-web" "$out"
+  assert_contains "containers: pihole dns" "53/udp lan pihole-dns" "$out"
+  assert_contains "containers: pihole web port from FTL in the container" "8091/tcp lan pihole-web" "$out"
   assert_contains "containers: pihole DHCP from the container" "67/udp open pihole-dhcp" "$out"
-  assert_contains "containers: nginx port from the container's site" "8090/tcp web nginx" "$out"
-  assert_contains "containers: samba" "445/tcp open samba" "$out"
+  assert_contains "containers: nginx port from the container's site" "8090/tcp lan nginx" "$out"
+  assert_contains "containers: samba" "445/tcp lan samba" "$out"
   install -d "$ctr/denwatcher"; touch "$ctr/denwatcher/docker-compose.yml"
-  assert_contains "containers: Den-Watcher is open, published by Docker" "9393/tcp open denwatcher docker" \
+  assert_contains "containers: Den-Watcher is LAN only, published by Docker" "9393/tcp lan denwatcher docker" \
     "$(RPI_SETUP_CONTAINER_ROOT="$ctr" firewall_service_ports)"
-  assert_contains "containers: Den-Watcher port from its settings" "8095/tcp open denwatcher docker" \
+  assert_contains "containers: Den-Watcher port from its settings" "8095/tcp lan denwatcher docker" \
     "$(DENWATCHER_PORT=8095 RPI_SETUP_CONTAINER_ROOT="$ctr" firewall_service_ports)"
   assert_lacks "containers: no Den-Watcher status page by default" "denwatcher-status" \
     "$(RPI_SETUP_CONTAINER_ROOT="$ctr" firewall_service_ports)"
@@ -155,8 +186,8 @@ else
   install -d "$ctr/apps"
   printf '    ports:\n      - "0.0.0.0:8096:8080"\n    ports:\n      - "0.0.0.0:8097:80"\n' >"$ctr/apps/docker-compose.yml"
   out="$(RPI_SETUP_CONTAINER_ROOT="$ctr" firewall_service_ports)"
-  assert_contains "containers: each app's port is open, published by Docker" "8096/tcp open apps docker" "$out"
-  assert_contains "containers: each app's port, not the one inside" "8097/tcp open apps docker" "$out"
+  assert_contains "containers: each app's port is LAN only, published by Docker" "8096/tcp lan apps docker" "$out"
+  assert_contains "containers: each app's port, not the one inside" "8097/tcp lan apps docker" "$out"
   unset -f docker
 fi
 
@@ -165,7 +196,7 @@ if [[ $EUID -eq 0 ]] && command -v nft >/dev/null 2>&1 &&
    printf 'table inet rpi_setup_probe\ndelete table inet rpi_setup_probe\n' >"$TMP/probe.nft" &&
    nft -c -f "$TMP/probe.nft" >/dev/null 2>&1; then
   firewall_ruleset "22 2222" "53/tcp 53/udp 67/udp 8000-8100/tcp" "80/tcp 19999/tcp" \
-    "192.168.1.0/24 10.0.0.1 fd00::/8" >"$TMP/full.nft"
+    "192.168.1.0/24 10.0.0.1 fd00::/8" "19999/tcp" 1 >"$TMP/full.nft"
   assert_ok "nft -c accepts the full ruleset" nft -c -f "$TMP/full.nft"
   firewall_ruleset "22" "" "" "" >"$TMP/min.nft"
   assert_ok "nft -c accepts the minimal ruleset" nft -c -f "$TMP/min.nft"
@@ -177,18 +208,34 @@ if [[ $EUID -eq 0 ]] && command -v nft >/dev/null 2>&1 &&
   in_container() { return 0; }
   systemctl() { :; }
   firewall_sshd_ports() { printf '2222 '; }
-  firewall_service_ports() { printf '53/udp open pihole-dns\n80/tcp web pihole-web\n9393/tcp open denwatcher docker\n'; }
+  firewall_service_ports() { printf '53/udp lan pihole-dns\n80/tcp lan pihole-web\n9393/tcp lan denwatcher docker\n9987/udp open teamspeak-voice docker\n'; }
   FW_NFT_FILE="$TMP/etc/firewall.nft"
   FW_UNIT_DIR="$TMP"
   run_out="$(FIREWALL_EXTRA_PORTS='8123/tcp' FIREWALL_ALLOW_FROM='192.168.1.0/24' run_firewall 2>&1)"
   assert_contains "run_firewall: container mode does not load" "did not load" "$run_out"
-  assert_contains "run_firewall: a Docker-published port says it is not limited" \
-    "Allowing 9393/tcp for denwatcher (published by Docker, not limited by FIREWALL_ALLOW_FROM)" "$run_out"
+  assert_contains "run_firewall: a Docker-published LAN port is limited" \
+    "Allowing 9393/tcp for denwatcher (from 192.168.1.0/24 only)" "$run_out"
   gen="$(cat "$FW_NFT_FILE")"
   assert_contains "run_firewall: sshd's real port kept" 'tcp dport { 22, 2222 }' "$gen"
   assert_contains "run_firewall: extra port" "8123" "$gen"
-  assert_contains "run_firewall: web port limited" 'ip saddr { 192.168.1.0/24 } tcp dport { 80 }' "$gen"
-  assert_contains "run_firewall: a Docker-published port is open, not limited" 'tcp dport { 9393, 8123 } accept' "$gen"
+  assert_contains "run_firewall: LAN ports limited" 'ip saddr { 192.168.1.0/24 } tcp dport { 80, 9393 }' "$gen"
+  assert_contains "run_firewall: DNS limited" 'ip saddr { 192.168.1.0/24 } udp dport { 53 }' "$gen"
+  assert_contains "run_firewall: a Docker-published LAN port is limited in forward" 'ct original proto-dst { 9393 } ct original ip saddr != { 192.168.1.0/24 } drop' "$gen"
+  assert_contains "run_firewall: TeamSpeak voice stays open" 'udp dport { 9987 } accept' "$gen"
+  assert_contains "run_firewall: extra port open" 'tcp dport { 8123 } accept' "$gen"
+  gen="$(FIREWALL_EXTRA_PORTS='8123/tcp' FIREWALL_ALLOW_FROM=any run_firewall 2>/dev/null; cat "$FW_NFT_FILE")"
+  assert_contains "run_firewall: any opens the LAN ports to everyone" 'tcp dport { 8123, 80, 9393 } accept' "$gen"
+  assert_lacks "run_firewall: any has no forward chain" "chain forward" "$gen"
+  firewall_lan_cidrs() { printf '192.168.7.0/24 fe80::/10 fc00::/7\n'; }
+  gen="$(FIREWALL_EXTRA_PORTS='8123/tcp' FIREWALL_ALLOW_FROM='' run_firewall 2>/dev/null; cat "$FW_NFT_FILE")"
+  assert_contains "run_firewall: empty means this Pi's networks" 'ip saddr { 192.168.7.0/24 } tcp dport { 80, 9393 }' "$gen"
+  assert_contains "run_firewall: empty means this Pi's IPv6 networks" 'ip6 saddr { fe80::/10, fc00::/7 }' "$gen"
+  firewall_lan_cidrs() { :; }
+  run_out="$(FIREWALL_EXTRA_PORTS='8123/tcp' FIREWALL_ALLOW_FROM='' run_firewall 2>&1; cat "$FW_NFT_FILE")"
+  assert_contains "run_firewall: no network found warns" "no local network was found" "$run_out"
+  assert_contains "run_firewall: and opens the LAN ports" 'tcp dport { 8123, 80, 9393 } accept' "$run_out"
+  unset -f firewall_lan_cidrs
+  (FIREWALL_EXTRA_PORTS='8123/tcp' FIREWALL_ALLOW_FROM='192.168.1.0/24' run_firewall) >/dev/null 2>&1
   assert_eq "run_firewall: creates its folder root-only" "700" "$(stat -c %a "$TMP/etc")"
   assert_contains "run_firewall: unit loads the file" "ExecStart=/usr/sbin/nft -f $FW_NFT_FILE" \
     "$(cat "$TMP/rpi-setup-firewall.service")"

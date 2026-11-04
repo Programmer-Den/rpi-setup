@@ -333,7 +333,7 @@ check_tasks() {
     if have docker; then check_container teamspeak; fi
     check_listen "teamspeak: voice" "$(port_setting TEAMSPEAK_VOICE_PORT 9987)" udp
     check_listen "teamspeak: files" "$(port_setting TEAMSPEAK_FILE_PORT 30033)" tcp
-    local qhttp="${TEAMSPEAK_QUERY_HTTP:-yes}"
+    local qhttp="${TEAMSPEAK_QUERY_HTTP:-no}"
     case "${qhttp,,}" in
       yes|true|on|1) check_http "teamspeak: query" "http://$host:$(port_setting TEAMSPEAK_QUERY_PORT 10080)/" any ;;
       no|false|off|0) ;;

@@ -19,7 +19,7 @@ run_firewall() {
   setting_on FIREWALL_AUTO_PORTS || true
   local extra allow
   extra="$(firewall_port_specs FIREWALL_EXTRA_PORTS "${FIREWALL_EXTRA_PORTS:-}")" || exit 1
-  allow="$(firewall_cidrs FIREWALL_ALLOW_FROM "${FIREWALL_ALLOW_FROM:-}")" || exit 1
+  allow="$(firewall_allow_from "${FIREWALL_ALLOW_FROM:-}")" || exit 1
 
   if ! command -v nft >/dev/null 2>&1; then
     apt_install nftables
@@ -35,20 +35,19 @@ run_firewall() {
     fi
   done
 
-  # "port/proto kind service [docker]" lines: kind "open" (anyone) or "web"
-  # (FIREWALL_ALLOW_FROM); "docker" marks a port Docker publishes itself.
-  local services="" open="" web="" spec kind svc note
+  # "port/proto kind service [docker]" lines: kind "open" (anyone) or "lan"
+  # (FIREWALL_ALLOW_FROM); "docker" marks a port Docker publishes itself,
+  # which the forward chain limits (Docker forwards it past the input chain).
+  local services="" open="" lan="" dlan="" spec kind svc note
   if setting_on FIREWALL_AUTO_PORTS; then
     services="$(firewall_service_ports)" || exit 1
   fi
   while read -r spec kind svc note; do
     [[ -n "$spec" ]] || continue
-    if [[ "$kind" == web ]]; then
-      web+=" $spec"
+    if [[ "$kind" == lan ]]; then
+      lan+=" $spec"
+      [[ "$note" != docker ]] || dlan+=" $spec"
       info "Allowing $spec for $svc${allow:+ (from $allow only)}"
-    elif [[ "$note" == docker ]]; then
-      open+=" $spec"
-      info "Allowing $spec for $svc (published by Docker, not limited by FIREWALL_ALLOW_FROM)"
     else
       open+=" $spec"
       info "Allowing $spec for $svc"
@@ -56,13 +55,15 @@ run_firewall() {
   done <<<"$services"
   [[ -z "$extra" ]] || info "Allowing FIREWALL_EXTRA_PORTS: $extra"
   open+=" $extra"
+  local tailscale=""
+  if command -v tailscale >/dev/null 2>&1; then tailscale=1; fi
 
   # /etc/rpi-setup also holds the root-only settings (0700): create it only
   # when missing, so an existing folder's mode is never loosened.
   [[ -d "$(dirname "$FW_NFT_FILE")" ]] || install -m 0700 -d "$(dirname "$FW_NFT_FILE")"
   local tmp out
   tmp="$(mktemp)"
-  firewall_ruleset "$ssh" "$open" "$web" "$allow" >"$tmp"
+  firewall_ruleset "$ssh" "$open" "$lan" "$allow" "$dlan" "$tailscale" >"$tmp"
   if ! out="$(nft -c -f "$tmp" 2>&1)"; then
     if in_container && [[ "$out" == *"Operation not permitted"* ]]; then
       warn 'This container may not check nftables rules; skipping the check'
@@ -155,6 +156,39 @@ firewall_cidrs() {
   printf '%s\n' "$out"
 }
 
+# FIREWALL_ALLOW_FROM value $1 as the subnets that may reach the LAN
+# services, space separated: empty means this Pi's own networks
+# (firewall_lan_cidrs), "any" means anyone (prints nothing), anything else
+# goes through firewall_cidrs. When no network can be found it warns and
+# allows anyone, like "any".
+firewall_allow_from() {
+  local v="$1" lan
+  if [[ "${v,,}" == any ]]; then return 0; fi
+  if [[ -n "$v" ]]; then firewall_cidrs FIREWALL_ALLOW_FROM "$v"; return; fi
+  lan="$(firewall_lan_cidrs)"
+  if [[ -z "$lan" ]]; then
+    warn 'FIREWALL_ALLOW_FROM is empty and no local network was found, so the LAN services are open to anyone; set FIREWALL_ALLOW_FROM'
+    return 0
+  fi
+  info "FIREWALL_ALLOW_FROM is empty: the LAN services are limited to this Pi's networks ($lan); set it to any to open them to everyone" >&2
+  printf '%s\n' "$lan"
+}
+
+# This Pi's own networks, space separated: the IPv4 and IPv6 subnets of the
+# kernel routes on its network interfaces (not loopback, Docker or VPN
+# interfaces), plus IPv6 link-local (fe80::/10) and unique local (fc00::/7)
+# addresses when the Pi has IPv6 routes.
+firewall_lan_cidrs() {
+  local skip='^(lo|docker|br-|veth|tailscale|wg|tun)' v4 v6 any6
+  v4="$(ip -o -4 route show proto kernel scope link 2>/dev/null |
+    awk -v skip="$skip" '$2 == "dev" && $3 !~ skip && $1 ~ /^[0-9.]+\/[0-9]+$/ { print $1 }')" || v4=""
+  v6="$(ip -o -6 route show proto kernel 2>/dev/null |
+    awk -v skip="$skip" '$2 == "dev" && $3 !~ skip && $1 ~ /^[0-9a-f:]+\/[0-9]+$/ && $1 !~ /^fe80:/ { print $1 }')" || v6=""
+  any6="$(ip -o -6 route show 2>/dev/null | head -n1)" || any6=""
+  [[ -z "$any6" ]] || v6+=$'\nfe80::/10\nfc00::/7'
+  printf '%s\n%s\n' "$v4" "$v6" | awk 'NF && !seen[$0]++' | paste -sd' ' -
+}
+
 # Comma-joined, de-duplicated ports of protocol $1 from the "port/proto"
 # entries in $2, e.g. "tcp" "22/tcp 80/tcp 53/udp" -> "22, 80".
 firewall_ports_of() {
@@ -172,25 +206,31 @@ firewall_ports_of() {
 # The nftables ruleset (pure: no system access). Arguments:
 #   $1 SSH ports, space separated (always allowed from anywhere)
 #   $2 open "port/proto" entries (allowed from anywhere)
-#   $3 web UI "port/proto" entries (allowed from $4 only; from anywhere if $4 is empty)
-#   $4 source subnets for the web UIs, space separated (IPv4 and/or IPv6)
+#   $3 LAN "port/proto" entries (allowed from $4 only; from anywhere if $4 is empty)
+#   $4 source subnets for the LAN entries, space separated (IPv4 and/or IPv6)
+#   $5 the LAN entries of $3 that Docker publishes: the forward chain drops
+#      connections to them from outside $4 (Docker forwards them to the
+#      container before the input chain sees them)
+#   $6 non-empty: Tailscale is installed, so allow everything over tailscale0
 firewall_ruleset() {
-  local ssh="$1" open="$2" web="$3" allow="$4" c v4="" v6="" s proto ports web_only=""
+  local ssh="$1" open="$2" lan="$3" allow="$4" dlan="${5:-}" tailscale="${6:-}"
+  local c v4="" v6="" s proto ports lan_only="" fwd="" tag='comment "Docker port, LAN only"'
   if [[ -z "$allow" ]]; then
-    open+=" $web"
+    open+=" $lan"
+    dlan=""
   else
     for c in $allow; do
       if [[ "$c" == *:* ]]; then v6+="${v6:+, }$c"; else v4+="${v4:+, }$c"; fi
     done
-    # A port that is open to anyone anyway needs no extra web rule.
-    for s in $web; do
-      [[ " $open " == *" $s "* ]] || web_only+=" $s"
+    # A port that is open to anyone anyway needs no extra rule.
+    for s in $lan; do
+      [[ " $open " == *" $s "* ]] || lan_only+=" $s"
     done
   fi
 
   cat <<EOF
 # Managed by rpi-setup (tasks/firewall.sh); re-run "setup.sh firewall" to change.
-# Only this table is replaced: Docker's and Tailscale's own rules stay as they are.
+# Only this table is replaced: Docker's own rules stay as they are.
 table inet rpi_setup
 delete table inet rpi_setup
 table inet rpi_setup {
@@ -200,9 +240,11 @@ table inet rpi_setup {
     ct state invalid drop
     iifname "lo" accept
     meta l4proto { icmp, ipv6-icmp } accept
-    iifname "tailscale0" accept comment "Tailscale"
-    iifname "docker0" accept comment "Docker containers"
-    iifname "br-*" accept comment "Docker compose networks"
+EOF
+  [[ -z "$tailscale" ]] || printf '    iifname "tailscale0" accept comment "Tailscale"\n'
+  cat <<EOF
+    iifname "docker0" meta l4proto { tcp, udp } th dport 53 accept comment "DNS for Docker containers"
+    iifname "br-*" meta l4proto { tcp, udp } th dport 53 accept comment "DNS for Docker compose networks"
     udp sport 67 udp dport 68 accept comment "DHCP client"
     meta nfproto ipv6 udp sport 547 udp dport 546 accept comment "DHCPv6 client"
     udp dport 5353 accept comment "mDNS (<host>.local)"
@@ -213,15 +255,34 @@ EOF
     [[ -z "$ports" ]] || printf '    %s dport { %s } accept\n' "$proto" "$ports"
   done
   for proto in tcp udp; do
-    ports="$(firewall_ports_of "$proto" "$web_only")"
+    ports="$(firewall_ports_of "$proto" "$lan_only")"
     [[ -n "$ports" ]] || continue
-    [[ -z "$v4" ]] || printf '    ip saddr { %s } %s dport { %s } accept comment "web UIs"\n' "$v4" "$proto" "$ports"
-    [[ -z "$v6" ]] || printf '    ip6 saddr { %s } %s dport { %s } accept comment "web UIs"\n' "$v6" "$proto" "$ports"
+    [[ -z "$v4" ]] || printf '    ip saddr { %s } %s dport { %s } accept comment "LAN services"\n' "$v4" "$proto" "$ports"
+    [[ -z "$v6" ]] || printf '    ip6 saddr { %s } %s dport { %s } accept comment "LAN services"\n' "$v6" "$proto" "$ports"
   done
-  cat <<'EOF'
-  }
-}
-EOF
+  printf '  }\n'
+  # Ports Docker publishes, limited before Docker's own forward rules
+  # (priority filter) see them. "ct original" is the client's side of the
+  # connection, also for the replies.
+  for proto in tcp udp; do
+    ports="$(firewall_ports_of "$proto" "$dlan")"
+    [[ -n "$ports" ]] || continue
+    s="ct status dnat meta l4proto $proto ct original proto-dst { $ports }"
+    if [[ -n "$v4" ]]; then
+      fwd+="    meta nfproto ipv4 $s ct original ip saddr != { $v4 } drop $tag"$'\n'
+    else
+      fwd+="    meta nfproto ipv4 $s drop $tag"$'\n'
+    fi
+    if [[ -n "$v6" ]]; then
+      fwd+="    meta nfproto ipv6 $s ct original ip6 saddr != { $v6 } drop $tag"$'\n'
+    else
+      fwd+="    meta nfproto ipv6 $s drop $tag"$'\n'
+    fi
+  done
+  if [[ -n "$fwd" ]]; then
+    printf '  chain forward {\n    type filter hook forward priority filter - 1; policy accept;\n%s  }\n' "$fwd"
+  fi
+  printf '}\n'
 }
 
 # systemd unit that loads (and on stop removes) only the rpi_setup table.
@@ -284,10 +345,10 @@ firewall_service_ports() {
   local p
   if command -v pihole-FTL >/dev/null 2>&1 || command -v pihole >/dev/null 2>&1 || task_in_container pihole; then
     load_task_config pihole >/dev/null
-    printf '53/tcp open pihole-dns\n53/udp open pihole-dns\n'
+    printf '53/tcp lan pihole-dns\n53/udp lan pihole-dns\n'
     p="$(pihole_web_ports | sort -un)"
     [[ -n "$p" ]] || p="${PIHOLE_WEB_PORT:-80}"
-    for p in $p; do printf '%s/tcp web pihole-web\n' "$p"; done
+    for p in $p; do printf '%s/tcp lan pihole-web\n' "$p"; done
     if [[ "$(pihole_ftl --config dhcp.active 2>/dev/null)" == true ]]; then
       printf '67/udp open pihole-dhcp\n'
       if [[ "$(pihole_ftl --config dhcp.ipv6 2>/dev/null)" == true ]]; then
@@ -299,33 +360,33 @@ firewall_service_ports() {
     load_task_config web >/dev/null
     p="$(firewall_nginx_ports)"
     [[ -n "$p" ]] || p="${WEB_PORT:-80}"
-    for p in $p; do printf '%s/tcp web nginx\n' "$p"; done
+    for p in $p; do printf '%s/tcp lan nginx\n' "$p"; done
   fi
   if [[ -f /opt/netalertx/docker-compose.yml ]]; then
     load_task_config netalertx >/dev/null
     : "${NETALERTX_PORT:=20211}"
     require_port NETALERTX_PORT
     # The web UI's browser code also calls NetAlertX's API server (GRAPHQL_PORT).
-    printf '%s/tcp web netalertx\n20212/tcp web netalertx-api\n' "$NETALERTX_PORT"
+    printf '%s/tcp lan netalertx\n20212/tcp lan netalertx-api\n' "$NETALERTX_PORT"
   fi
   if [[ -f /opt/teamspeak/docker-compose.yml ]]; then
     load_task_config teamspeak >/dev/null
     : "${TEAMSPEAK_VOICE_PORT:=9987}" "${TEAMSPEAK_FILE_PORT:=30033}"
-    : "${TEAMSPEAK_QUERY_PORT:=10080}" "${TEAMSPEAK_QUERY_HTTP:=yes}"
+    : "${TEAMSPEAK_QUERY_PORT:=10080}" "${TEAMSPEAK_QUERY_HTTP:=no}"
     require_port TEAMSPEAK_VOICE_PORT
     require_port TEAMSPEAK_FILE_PORT
     require_port TEAMSPEAK_QUERY_PORT
     printf '%s/udp open teamspeak-voice docker\n%s/tcp open teamspeak-file docker\n' "$TEAMSPEAK_VOICE_PORT" "$TEAMSPEAK_FILE_PORT"
-    if setting_on TEAMSPEAK_QUERY_HTTP; then printf '%s/tcp open teamspeak-query docker\n' "$TEAMSPEAK_QUERY_PORT"; fi
+    if setting_on TEAMSPEAK_QUERY_HTTP; then printf '%s/tcp lan teamspeak-query docker\n' "$TEAMSPEAK_QUERY_PORT"; fi
   fi
-  # Den-Watcher and the apps publish their ports ("ports:" in the compose
-  # file): Docker forwards those to the container before the input chain
-  # sees them, so a "web" rule could never limit them to FIREWALL_ALLOW_FROM.
+  # Den-Watcher, the apps and TeamSpeak publish their ports ("ports:" in
+  # the compose file): Docker forwards those to the container before the
+  # input chain sees them, so the forward chain limits the "lan" ones.
   if [[ -f "$(container_dir denwatcher)/docker-compose.yml" ]]; then
     load_task_config denwatcher >/dev/null
     : "${DENWATCHER_PORT:=9393}"
     require_port DENWATCHER_PORT
-    printf '%s/tcp open denwatcher docker\n' "$DENWATCHER_PORT"
+    printf '%s/tcp lan denwatcher docker\n' "$DENWATCHER_PORT"
     # The status page is meant for outside the local network.
     if [[ -n "${DENWATCHER_STATUS_PORT:-}" ]]; then
       require_port DENWATCHER_STATUS_PORT
@@ -334,24 +395,25 @@ firewall_service_ports() {
   fi
   # The apps task's ports, from its compose file (one per app).
   if [[ -f "$(container_dir apps)/docker-compose.yml" ]]; then
-    sed -n 's/^ *- "0\.0\.0\.0:\([0-9]*\):[0-9]*"$/\1\/tcp open apps docker/p' "$(container_dir apps)/docker-compose.yml"
+    sed -n 's/^ *- "0\.0\.0\.0:\([0-9]*\):[0-9]*"$/\1\/tcp lan apps docker/p' "$(container_dir apps)/docker-compose.yml"
   fi
   if apt_installed samba || task_in_container samba; then
-    printf '445/tcp open samba\n139/tcp open samba\n137/udp open samba-netbios\n138/udp open samba-netbios\n'
+    printf '445/tcp lan samba\n139/tcp lan samba\n137/udp lan samba-netbios\n138/udp lan samba-netbios\n'
   fi
   if command -v tailscale >/dev/null 2>&1; then
     printf '41641/udp open tailscale-direct\n'
   fi
 }
 
-# Docker's published ports (e.g. TeamSpeak's) are forwarded to containers
-# before the input chain sees them, so these rules do not limit them.
+# Docker's published ports are forwarded to containers before the input
+# chain sees them: the forward chain limits those of rpi-setup's tasks, but
+# a container started by hand is not limited.
 firewall_docker_note() {
   command -v docker >/dev/null 2>&1 || return 0
   local published
   published="$(docker ps --format '{{.Names}}: {{.Ports}}' 2>/dev/null | grep -- '->' || true)"
   [[ -n "$published" ]] || return 0
-  warn 'Ports published by Docker containers bypass this firewall (Docker forwards them itself):'
+  info 'Ports published by Docker containers (those of rpi-setup tasks are limited as listed above; others are open to anyone):'
   printf '  %s\n' "$published" >&2
-  warn 'To close or limit one, see "Ports of Docker containers" in docs/tasks/firewall.md.'
+  info 'See "Ports of Docker containers" in docs/tasks/firewall.md.'
 }

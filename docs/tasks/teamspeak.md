@@ -19,20 +19,24 @@ shown and it is taken down again.
 | `TEAMSPEAK_ACCEPT_LICENSE` | `yes` | You accept the TeamSpeak server license; the server does not start without it. |
 | `TEAMSPEAK_VOICE_PORT` | `9987` | Voice port (UDP) on the Pi. Can be changed later; see "Voice port" below. |
 | `TEAMSPEAK_FILE_PORT` | `30033` | File transfer port (TCP). |
-| `TEAMSPEAK_QUERY_HTTP` | `yes` | Turn on the web query API. |
+| `TEAMSPEAK_QUERY_HTTP` | `no` | Turn on the web query API, an admin API over plain HTTP that nothing in rpi-setup needs. The `firewall` task limits its port to `FIREWALL_ALLOW_FROM`. |
 | `TEAMSPEAK_QUERY_PORT` | `10080` | Web query port (TCP). |
 | `TEAMSPEAK_QUERY_ADMIN_PASSWORD` | empty: generated with `TEAMSPEAK_USAGE=yes` (and kept once generated), else TeamSpeak's own (none set) | Password of the `serveradmin` query account. Cannot contain `"`, `\` or `$`. A generated one is printed once and kept in `/var/lib/rpi-setup/secrets/teamspeak.env`. |
 | `TEAMSPEAK_IMAGE` | `teamspeaksystems/teamspeak6-server:latest` | Docker image. |
 | `TEAMSPEAK_USAGE` | `yes` | Log who is online and when, for the start page ([below](#who-is-online-and-when)). |
 | `TEAMSPEAK_USAGE_DAYS` | `90` | Days of visits the usage log keeps (1 to 9999). |
+| `TEAMSPEAK_USAGE_CONNECTIONS` | `no` | `yes`: the start page lists which nicknames came from the same IP address ("Same connection", [below](#who-is-online-and-when)). Anyone who can open the start page sees it. |
 | `TEAMSPEAK_PUBLIC_ADDRESS` | empty: look up the public IP | The address friends outside your LAN connect to, shown on the start page: a DynDNS name or fixed address, empty to look up the Pi's public IPv4 address every 30 minutes, or `no` for none ([below](#internet-address)). Needs `TEAMSPEAK_USAGE=yes`. |
 | `TEAMSPEAK_PUBLIC_PORT` | `TEAMSPEAK_VOICE_PORT` | The UDP port your router forwards to the voice port, shown with the internet address. |
 
 ## What it installs and changes
 
-- `/opt/teamspeak/docker-compose.yml` (root only, it holds the query
-  password) and `/opt/teamspeak/data`, owned by UID 9987: the image always
-  runs as 9987.
+- `/opt/teamspeak/docker-compose.yml` (root only) and
+  `/opt/teamspeak/data`, owned by UID 9987: the image always runs as 9987.
+- `/opt/teamspeak/secrets.env` (root only) with the query password, which
+  the server and the usage bot read with `env_file`, so it is not in the
+  compose file. Docker still keeps it in each container's settings, which
+  `docker inspect` and root can read.
 - `/opt/teamspeak/voice-port`: the voice port the server was created with
   (see below).
 - The `teamspeak` container with the voice, file and (with
@@ -87,8 +91,9 @@ registers for join and leave events and writes to `/opt/teamspeak/usage/data`:
   server's info, the channel tree and the details of each client online
   (channel, version, platform, country, away, muted, idle) from `serverinfo`,
   `channellist` and `clientlist`. IP addresses stay in `sessions.jsonl` and
-  `online.json` on the Pi; `usage.json` only groups visits by them, named
-  after the nickname used last, and never contains an address. A group is
+  `online.json` on the Pi, and `usage.json` never contains an address. With
+  `TEAMSPEAK_USAGE_CONNECTIONS=yes` it also groups visits by address, named
+  after the nickname used last (empty by default). A group is
   listed when two or more identities (unique IDs) used the address; visits
   from one address more than 30 days apart are separate groups, so an address
   handed to another household (or a carrier-grade NAT address) does not link
@@ -144,9 +149,10 @@ Pi's own public address is IPv4 only.
 
 ## Good to know
 
-- Ports published by Docker bypass the `firewall` task's rules (it opens them
-  anyway and says so). How to close or limit them:
-  [Ports of Docker containers](firewall.md#ports-of-docker-containers).
+- Docker publishes the ports itself, before the `firewall` task's `input`
+  rules see them. The firewall task leaves voice and file transfer open to
+  anyone and limits the web query port to `FIREWALL_ALLOW_FROM` in its
+  `forward` chain: [Ports of Docker containers](firewall.md#ports-of-docker-containers).
 - The server container drops every Linux capability and cannot gain
   privileges (`cap_drop: [ALL]`, `no-new-privileges`): the image runs as
   user 9987 from the start and its ports are above 1024, so it needs none.

@@ -14,7 +14,7 @@ sudo bash setup.sh samba
 | `SAMBA_USER` | the user who ran `sudo` | Linux user who owns the share and logs in to it. Must exist on the Pi. |
 | `SAMBA_PASSWORD` | empty: generated | SMB password of that user. Empty: generated the first time, printed once and saved; later runs keep the existing password unless you set one. Switching between the package and the container (`SAMBA_DOCKER`) keeps the saved password too. |
 | `SAMBA_SHARE_NAME` | `nas-share` | Share name, as in `\\<pi>\nas-share`. Letters, digits, `.`, `_`, `-`; not `global`, `homes` or `printers`. Renaming it replaces the old share in `smb.conf`. |
-| `SAMBA_SHARE_PATH` | `<home of SAMBA_USER>/<SAMBA_SHARE_NAME>` | Folder to share (absolute path). Created if missing. |
+| `SAMBA_SHARE_PATH` | `<home of SAMBA_USER>/<SAMBA_SHARE_NAME>` | Folder to share (absolute path). Created if missing. Not a system folder (`/`, `/etc`, `/usr`, `/var`, `/var/lib/...`, `/home` or `/root` themselves, `/boot`, ...): the task refuses those, since the container would get them read-write as root. |
 | `SAMBA_READ_ONLY` | `no` | `yes` makes the share read-only. |
 | `SAMBA_DOCKER` | `no` | `yes` runs Samba in its own Docker container instead of the apt package ([below](#run-it-in-docker)). |
 | `SAMBA_IMAGE` | `crazymax/samba:latest` | Docker image for `SAMBA_DOCKER=yes`. |

@@ -68,8 +68,8 @@ container from the same image, writes what it reads to the in-memory
 | `power` | Power the CPU and the kernel's hwmon sensors report. Runs as root, as only root may read the CPU's energy counters, but without any capability. A Pi 5's total power needs `vcgencmd` on the host, which a container does not reach. |
 | `pressure` | How much of the time tasks waited for the CPU, memory and disks (`/proc/pressure`; Raspberry Pi OS's kernel has it switched off, so it may show nothing). |
 | `kernel` | Context switches, interrupts, new processes, open files, sockets, TCP connections and retransmissions. |
-| `wifi` | Link quality and signal of each connected Wi-Fi interface, and the Wi-Fi networks nearby from the scans NetworkManager makes on its own (it starts none), asked through the host's system D-Bus (`/run/dbus`, read-only); a hub compares them under *Compare devices*, *Wi-Fi nearby*. Left out with a warning where there is no system D-Bus; without NetworkManager (Raspberry Pi OS before bookworm) the networks nearby are left out. Raspberry Pi OS keeps the Wi-Fi radio switched off (`rfkill list` shows it *Soft blocked*, `iw reg get` says country `00`) until a Wi-Fi country is set, which a Pi on cable usually never gets, so it would hear no networks: with `DENWATCHER_WIFI_RADIO=yes` the task then sets `DENWATCHER_WIFI_COUNTRY` (with `raspi-config`), unblocks each radio, also for the next boots, and switches Wi-Fi on in NetworkManager, and says what it reached. A radio switched off while a country is set was switched off on purpose and stays off (the task says how to switch it on); a radio switched off by a hardware switch only warns, and the others are still unblocked. The radio only listens; the Pi joins no Wi-Fi network that is not saved on it. |
-| `bluetooth` | Connected Bluetooth devices with their name, kind or battery, asked from BlueZ through the host's system D-Bus (`/run/dbus`, read-only); left out with a warning where there is none. It only lists devices. |
+| `wifi` | Link quality and signal of each connected Wi-Fi interface, and the Wi-Fi networks nearby from the scans NetworkManager makes on its own (it starts none), asked through the host's system D-Bus (`/run/dbus`; mounted read-only, which does not stop it from talking to the bus: what it may ask is up to the bus's own policy for its user); a hub compares them under *Compare devices*, *Wi-Fi nearby*. Left out with a warning where there is no system D-Bus; without NetworkManager (Raspberry Pi OS before bookworm) the networks nearby are left out. Raspberry Pi OS keeps the Wi-Fi radio switched off (`rfkill list` shows it *Soft blocked*, `iw reg get` says country `00`) until a Wi-Fi country is set, which a Pi on cable usually never gets, so it would hear no networks: with `DENWATCHER_WIFI_RADIO=yes` the task then sets `DENWATCHER_WIFI_COUNTRY` (with `raspi-config`), unblocks each radio, also for the next boots, and switches Wi-Fi on in NetworkManager, and says what it reached. A radio switched off while a country is set was switched off on purpose and stays off (the task says how to switch it on); a radio switched off by a hardware switch only warns, and the others are still unblocked. The radio only listens; the Pi joins no Wi-Fi network that is not saved on it. |
+| `bluetooth` | Connected Bluetooth devices with their name, kind or battery, asked from BlueZ through the host's system D-Bus (`/run/dbus`; mounted read-only, which does not limit what it may ask the bus); left out with a warning where there is none. It only lists devices. |
 | `memory` | Memory details such as dirty and slab memory, page faults and swapping. |
 | `ports` | The TCP and UDP ports the Pi listens on. |
 | `processes` | The processes using the most CPU and memory. |
@@ -123,8 +123,8 @@ from the internet, so it answers only HTTPS, with a certificate Den-Watcher
 makes itself, and shows nothing but a sign-in form until its password is
 given. The task publishes it as Den-Watcher's `STATUS_ADDR` (`:9443` inside
 the container) and `STATUS_PUBLIC_PORT`. Docker publishes the port itself,
-so it is open to anyone; `FIREWALL_ALLOW_FROM` does not limit it (see
-[Good to know](#good-to-know)).
+and the `firewall` task leaves it open to anyone, since it is meant for
+outside (see [Good to know](#good-to-know)).
 
 Then, once:
 
@@ -157,11 +157,10 @@ the port on the router too.
   clear of nginx (80 or 8080). An install from before used 8080 or 8090; the
   next run of the task moves it to 9393 unless `DENWATCHER_PORT` is set.
 - Docker publishes the website's port and the status port itself, before
-  the `firewall` task's rules see them, so they are open to anyone who
-  reaches the Pi: the firewall task lists them as open, and
-  `FIREWALL_ALLOW_FROM` does not limit them. How to close or limit them, with
-  a rule in Docker's `DOCKER-USER` chain:
-  [Ports of Docker containers](firewall.md#ports-of-docker-containers).
+  the `firewall` task's `input` rules see them. The website has no login, so
+  the `firewall` task limits its port to `FIREWALL_ALLOW_FROM` in its
+  `forward` chain; the status page stays open to anyone (it has its own
+  password). See [Ports of Docker containers](firewall.md#ports-of-docker-containers).
 - A router's password does not belong in the settings file, which may be in
   git: set it once on the Pi with
   `sudo DENWATCHER_ROUTER_PASSWORD='Box=secret' bash setup.sh denwatcher`.
