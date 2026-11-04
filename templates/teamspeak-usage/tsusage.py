@@ -56,6 +56,9 @@ DAYS = max(1, int(os.environ.get("USAGE_DAYS", "90") or 90))
 VOICE_PORT = os.environ.get("TS_VOICE_PORT", "")
 PUBLIC_ADDRESS = os.environ.get("TS_PUBLIC_ADDRESS", "").strip()
 PUBLIC_PORT = os.environ.get("TS_PUBLIC_PORT", "") or VOICE_PORT
+# yes: the summary lists which identities came from the same IP address
+# ("Same connection"); anyone who can open the start page sees it.
+CONNECTIONS = os.environ.get("TS_CONNECTIONS", "no").strip().lower() in ("yes", "true", "on", "1")
 PUBLIC_IP_URLS = os.environ.get("TS_PUBLIC_IP_URLS",
                                 "https://api.ipify.org https://ipv4.icanhazip.com").split()
 PUBLIC_EVERY = 1800  # look up the public address again after, seconds
@@ -651,7 +654,7 @@ def summary(online, sessions, now, names=lambda ids: [], live=None):
         "concurrent": concurrent(online, sessions, now),
         "people": people_rows(online, sessions, now, names),
         "heatmap": heatmap(online, sessions, now),
-        "connections": ip_groups(online, sessions, now),
+        "connections": ip_groups(online, sessions, now) if CONNECTIONS else [],
         **live_summary(online, live or {}, names),
     }
 

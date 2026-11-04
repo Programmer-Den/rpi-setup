@@ -33,9 +33,9 @@ teamspeak_server_port() {
 
 run_teamspeak() {
   : "${TEAMSPEAK_VOICE_PORT:=9987}" "${TEAMSPEAK_FILE_PORT:=30033}" "${TEAMSPEAK_QUERY_PORT:=10080}"
-  : "${TEAMSPEAK_QUERY_HTTP:=yes}" "${TEAMSPEAK_ACCEPT_LICENSE:=yes}"
+  : "${TEAMSPEAK_QUERY_HTTP:=no}" "${TEAMSPEAK_ACCEPT_LICENSE:=yes}"
   : "${TEAMSPEAK_IMAGE:=teamspeaksystems/teamspeak6-server:latest}"
-  : "${TEAMSPEAK_USAGE:=yes}" "${TEAMSPEAK_USAGE_DAYS:=90}"
+  : "${TEAMSPEAK_USAGE:=yes}" "${TEAMSPEAK_USAGE_DAYS:=90}" "${TEAMSPEAK_USAGE_CONNECTIONS:=no}"
   : "${TEAMSPEAK_PUBLIC_ADDRESS:=}" "${TEAMSPEAK_PUBLIC_PORT:=${TEAMSPEAK_VOICE_PORT}}"
   require_port TEAMSPEAK_VOICE_PORT
   require_port TEAMSPEAK_PUBLIC_PORT
@@ -54,8 +54,9 @@ run_teamspeak() {
     die 'The TeamSpeak server only starts once you accept its license; set TEAMSPEAK_ACCEPT_LICENSE=yes'
   [[ "$admin_pw" != *[\"\\\$]* ]] ||
     die 'TEAMSPEAK_QUERY_ADMIN_PASSWORD cannot contain ", \ or $'
-  local usage=0
+  local usage=0 connections=no
   if setting_on TEAMSPEAK_USAGE; then usage=1; fi
+  if setting_on TEAMSPEAK_USAGE_CONNECTIONS; then connections=yes; fi
   if ! [[ "$TEAMSPEAK_USAGE_DAYS" =~ ^[0-9]{1,4}$ ]] || (( 10#$TEAMSPEAK_USAGE_DAYS < 1 )); then
     die "TEAMSPEAK_USAGE_DAYS must be a number of days from 1 to 9999 (got '$TEAMSPEAK_USAGE_DAYS')"
   fi
@@ -89,7 +90,7 @@ run_teamspeak() {
     fi
     ssh_query='      TSSERVER_QUERY_SSH_ENABLED: "true"'
     usage_service="$(teamspeak_usage_service "$dir" "$TEAMSPEAK_USAGE_DAYS" "$admin_pw" \
-      "$TEAMSPEAK_VOICE_PORT" "$public" "$TEAMSPEAK_PUBLIC_PORT")"
+      "$TEAMSPEAK_VOICE_PORT" "$public" "$TEAMSPEAK_PUBLIC_PORT" "$connections")"
   fi
 
   # The official image runs as uid:gid 9987 and ignores PUID/PGID, so the data
@@ -105,11 +106,19 @@ run_teamspeak() {
   # The file transfer and query ports are the same inside and outside:
   # TeamSpeak tells clients which file transfer port to use, so the two must
   # match. The voice port inside stays the one the server was created with
-  # and TEAMSPEAK_VOICE_PORT is published on the host. The compose file holds
-  # the query password, hence root-only (0600).
+  # and TEAMSPEAK_VOICE_PORT is published on the host. The query password is
+  # in secrets.env (root only), which both services read with env_file.
   # The image runs as 9987 from the start and its ports are unprivileged, so
   # the server needs no capability and no privilege escalation.
-  local changed=0
+  local changed=0 secrets=0
+  if [[ -n "$admin_pw" ]]; then
+    container_write_secrets "$dir" "TSSERVER_QUERY_ADMIN_PASSWORD=$admin_pw" "TS_QUERY_PASSWORD=$admin_pw" && secrets=1
+  elif [[ -f "$dir/secrets.env" ]]; then
+    rm -f "$dir/secrets.env"
+    secrets=1
+  fi
+  local env_file=""
+  [[ -z "$admin_pw" ]] || env_file=$'    env_file: ./secrets.env'
   if write_if_changed "$dir/docker-compose.yml" 0600 <<EOF
 services:
   teamspeak:
@@ -120,6 +129,7 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+${env_file}
     ports:
       - "${TEAMSPEAK_VOICE_PORT}:${inner}/udp"   # Voice
       - "${TEAMSPEAK_FILE_PORT}:${TEAMSPEAK_FILE_PORT}/tcp"     # File transfer
@@ -131,7 +141,6 @@ ${query_port}
       TSSERVER_QUERY_HTTP_PORT: "${TEAMSPEAK_QUERY_PORT}"
 ${query}
 ${ssh_query}
-$(if [[ -n "$admin_pw" ]]; then printf '      TSSERVER_QUERY_ADMIN_PASSWORD: "%s"\n' "$admin_pw"; fi)
     volumes:
       - type: bind
         source: $dir/data
@@ -150,7 +159,8 @@ EOF
   fi
   local started
   started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  container_up "$dir" "$name"
+  # Compose does not notice a changed secrets.env, so recreate then.
+  container_up "$dir" "$name" "$secrets"
   if [[ $usage -eq 1 ]]; then
     # The logger retries on its own when it cannot log in, so look for its
     # "Connected" line rather than only whether the container stays up: one
@@ -202,11 +212,13 @@ teamspeak_public_address() {
 
 # Copy the usage logger (templates/teamspeak-usage) to DIR/usage and print the
 # compose service that runs it, keeping DAYS days of visits, with the
-# serveradmin password PW, the voice port VOICE on the Pi and, for the start
-# page, the internet address PUBLIC (see teamspeak_public_address) with its
-# port PUBLIC_PORT. Its data folder gets its own UID.
+# serveradmin password PW (from secrets.env; only checked here), the voice
+# port VOICE on the Pi and, for the start page, the internet address PUBLIC
+# (see teamspeak_public_address) with its port PUBLIC_PORT, and with
+# CONNECTIONS=yes the "Same connection" list. Its data folder gets its own UID.
 teamspeak_usage_service() {
-  local dir="$1" days="$2" pw="$3" voice="${4:-9987}" public="${5:-}" public_port="${6:-${4:-9987}}"
+  local dir="$1" days="$2" pw="$3" voice="${4:-9987}" public="${5:-}" public_port="${6:-${4:-9987}}" connections="${7:-no}"
+  [[ -n "$pw" ]] || die 'teamspeak_usage_service: the query password is missing'
   local src="$RPI_SETUP_ROOT/templates/teamspeak-usage" uid
   uid="$(assign_uid teamspeak-usage)"
   # The data folder holds visitors' IP addresses: the logger's user and root
@@ -231,10 +243,11 @@ teamspeak_usage_service() {
       - ALL
     security_opt:
       - no-new-privileges:true
+    env_file: ./secrets.env
     environment:
       TS_HOST: teamspeak
       USAGE_DAYS: "$((10#$days))"
-      TS_QUERY_PASSWORD: "$pw"
+      TS_CONNECTIONS: "$connections"
       TS_VOICE_PORT: "$((10#$voice))"
       TS_PUBLIC_ADDRESS: "$public"
       TS_PUBLIC_PORT: "$((10#$public_port))"
