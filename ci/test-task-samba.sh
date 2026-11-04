@@ -80,7 +80,6 @@ docker() { :; }
 smbpasswd() { [[ "$1" == -s ]] && head -n1 >"$TMP/smbpasswd-got"; return 0; }
 printf '[global]\n' >"$TMP/native.conf"
 SMB_CONF="$TMP/native.conf"
-# shellcheck disable=SC2163  # the NAME=value arguments are exported on purpose
 # --- samba_check_path: never a system folder ----------------------------------
 for bad in / /etc /etc/ssh /usr /var /var/lib/docker /home /root /opt /boot/firmware /srv/../etc /tmp//; do
   assert_fails "share path: $bad is refused" samba_check_path "$bad"
@@ -89,6 +88,7 @@ for good in /srv/share /mnt/usb/share /home/alex/nas-share /opt/share /var/share
   assert_ok "share path: $good is fine" samba_check_path "$good"
 done
 
+# shellcheck disable=SC2163  # the NAME=value arguments are exported on purpose
 native() { ( SAMBA_DOCKER=no SAMBA_USER="$u" SAMBA_SHARE_PATH="$TMP/share"; [[ $# -eq 0 ]] || export "$@"; run_samba ) 2>&1; }
 rm -f "$TMP/saved" "$TMP/smbpasswd-got"
 load_secret() { echo saved-pw; }
