@@ -41,7 +41,7 @@ jobs:
     runs-on: [self-hosted, '${{ inputs.pi }}']
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Deploy
         env:
@@ -52,6 +52,18 @@ jobs:
           SETTINGS: ${{ inputs.settings }}
         run: |
           args=(--branch "$BRANCH" --tasks "$TASKS")
+          # With an rpi-setup submodule in this repository, deploy exactly the
+          # commit it pins (the one its checks tested) instead of the tip of
+          # main. A deploy command from before --commit gets the tip once and
+          # writes itself again on that run.
+          commit="$(git ls-tree HEAD rpi-setup | awk '$1 == "160000" {print $3}')"
+          if [ -n "$commit" ] && [ "$BRANCH" = main ]; then
+            if grep -q -e '--commit' /usr/local/sbin/rpi-setup-deploy; then
+              args+=(--commit "$commit")
+            else
+              echo "::warning::The deploy command on the Pi predates --commit, so this run deploys the tip of $BRANCH; the next run deploys the submodule's commit."
+            fi
+          fi
           # Passed only when set, so a Pi whose deploy command predates
           # --skip still runs every other workflow.
           [ -z "$SKIP" ] || args+=(--skip "$SKIP")

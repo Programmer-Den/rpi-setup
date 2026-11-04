@@ -41,7 +41,8 @@ pis/<pi>/id_ed25519.pub        public SSH key for that Pi (for host/flash.sh -a)
 
 1. The workflow checks out this repository on the Pi.
 2. `rpi-setup-deploy` updates the rpi-setup checkout on the Pi to the chosen
-   branch (only branches listed in `RUNNER_BRANCHES`), installs
+   branch (only branches listed in `RUNNER_BRANCHES`), or to the commit of
+   this repository's `rpi-setup` submodule if it has one (see below), installs
    `pis/<pi>/rpi-setup.env` as `/etc/rpi-setup/rpi-setup.env` (root only)
    and runs `setup.sh` with the chosen tasks for the user who owns the
    checkout (never `rpi-runner`). Without the settings file it stops if your
@@ -58,4 +59,16 @@ pis/<pi>/id_ed25519.pub        public SSH key for that Pi (for host/flash.sh -a)
   strangers could run code on your Pi.
 - Anyone who can push to or run workflows in this repository can run setup
   on the Pi as root. Keep it private and keep two-factor login on GitHub.
+- The runner takes only manual runs (*Run workflow*) of workflows from this
+  repository's `main` (`RUNNER_WORKFLOW_BRANCH`) and refuses every other job
+  before its first step, so a workflow on another branch never reaches the
+  Pi. Protect `main` with a ruleset (*Settings > Rules > Rulesets*: block
+  force pushes and deletion, require a pull request).
+- Optional: add rpi-setup as a submodule (`git submodule add
+  https://github.com/Programmer-Den/rpi-setup.git rpi-setup`). The workflows
+  then deploy exactly the commit it pins instead of the tip of `main`, so a
+  new rpi-setup commit reaches the Pi only once you move the submodule (for
+  example by merging Dependabot's `gitsubmodule` pull request).
+- Pin the actions in the workflows to a commit SHA, as the templates do; a
+  moved tag would otherwise run on the Pi.
 - Your SSH private key never goes into this repository, only the `.pub` file.
