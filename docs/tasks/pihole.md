@@ -8,9 +8,11 @@ dialogs, using the settings below.
 sudo bash setup.sh pihole
 ```
 
-The official installer runs as `curl https://install.pi-hole.net | bash`. The
-task prints a warning first and asks no question; leave `pihole` out of the
-run if you do not want the installer to run.
+The official installer from `https://install.pi-hole.net` runs as root, like
+`curl ... | bash`, but saved to a file first (so a cut-off download never runs)
+and with its SHA-256 in the log. The task prints a warning first and asks no
+question; leave `pihole` out of the run, or use `PIHOLE_DOCKER=yes`, if you
+do not want the installer to run.
 
 ## Settings
 

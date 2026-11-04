@@ -26,6 +26,7 @@ run_samba() {
     dir="${home}/${share}"
   fi
   [[ "$dir" == /* ]] || die "SAMBA_SHARE_PATH must be an absolute path (got '$dir')"
+  samba_check_path "$dir"
   if setting_on SAMBA_DOCKER; then run_samba_container "$u" "$dir" "$share" "$ro"; return; fi
   container_leave samba
 
@@ -67,6 +68,19 @@ run_samba() {
     systemctl reload smbd 2>/dev/null || systemctl restart smbd
   fi
   say "Share ready: \\\\$(hostname)\\${share} (user ${u}$([[ $ro == yes ]] && echo ', read-only'))"
+}
+
+# Dies unless share folder $1 is a folder of its own: not a system folder
+# (with SAMBA_DOCKER=yes the container would get it read-write as root), not
+# one with "..", and not a home folder as a whole.
+samba_check_path() {
+  local d="$1"
+  [[ "$d" != *"/../"* && "$d" != *"/.." ]] || die "SAMBA_SHARE_PATH cannot contain '..' (got '$d')"
+  while [[ "$d" == */ && "$d" != / ]]; do d="${d%/}"; done
+  case "$d" in
+    /|/etc|/etc/*|/usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/lib|/lib/*|/lib64|/boot|/boot/*|/proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/run|/run/*|/root|/root/*|/var|/var/lib|/var/lib/*|/opt|/home|/tmp)
+      die "SAMBA_SHARE_PATH cannot be a system folder like $d; use a folder of its own, e.g. /srv/share or /mnt/usb/share" ;;
+  esac
 }
 
 # Write the share rpi-setup manages into smb.conf $1 as section [$2]: it

@@ -8,6 +8,8 @@ TASKS+=("log2ram|log2ram: /var/log in RAM, written to the SD card every hour")
 L2R_CONF=/etc/log2ram.conf
 L2R_JOURNALD_CONF=/etc/systemd/journald.conf.d/20-log2ram.conf
 L2R_TIMER_CONF=/etc/systemd/system/log2ram-daily.timer.d/10-rpi-setup.conf
+L2R_APT_LIST=/etc/apt/sources.list.d/azlux.list
+L2R_APT_PIN=/etc/apt/preferences.d/rpi-setup-azlux
 
 run_log2ram() {
   : "${LOG2RAM_SIZE:=128M}" "${LOG2RAM_JOURNAL_MAX_SIZE:=64M}" "${LOG2RAM_SYNC:=hourly}"
@@ -26,8 +28,15 @@ run_log2ram() {
 
   if ! apt_installed log2ram; then
     log2ram_add_repo
-    apt_update_now
   fi
+  # Also on a Pi that got the repository from an earlier run.
+  if [[ -f "$L2R_APT_LIST" ]]; then
+    install -m 0755 -d "${L2R_APT_PIN%/*}"
+    if log2ram_pin | write_if_changed "$L2R_APT_PIN" 0644; then
+      info "Wrote $L2R_APT_PIN: only log2ram comes from packages.azlux.fr"
+    fi
+  fi
+  apt_installed log2ram || apt_update_now
   apt_install log2ram rsync
   [[ -f "$L2R_CONF" ]] || die "log2ram is installed but $L2R_CONF is missing; reinstall it: sudo apt-get install --reinstall log2ram"
 
@@ -99,8 +108,24 @@ log2ram_add_repo() {
   fi
   rm -f "$tmp"
   chmod a+r "$key"
-  echo "deb [signed-by=$key] http://packages.azlux.fr/debian/ $codename main" >/etc/apt/sources.list.d/azlux.list
+  echo "deb [signed-by=$key] http://packages.azlux.fr/debian/ $codename main" >"$L2R_APT_LIST"
   info "Added the log2ram apt repository for $codename"
+}
+
+# The apt preferences for the azlux repository: log2ram from there, every
+# other package never (priority 1: only installed if asked for by name and
+# found nowhere else), so the repository cannot replace a system package
+# such as openssh-server or sudo.
+log2ram_pin() {
+  printf '%s\n' \
+    '# Managed by rpi-setup (tasks/log2ram.sh): take only log2ram from packages.azlux.fr.' \
+    'Package: log2ram' \
+    'Pin: origin packages.azlux.fr' \
+    'Pin-Priority: 500' \
+    '' \
+    'Package: *' \
+    'Pin: origin packages.azlux.fr' \
+    'Pin-Priority: 1'
 }
 
 # Set SIZE= in log2ram.conf $1 to $2 and turn off its error mails (a Pi has

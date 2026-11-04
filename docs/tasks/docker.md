@@ -21,7 +21,8 @@ itself first, with your `DOCKER_*` settings.
 ## What it installs and changes
 
 - Docker's apt repository (`/etc/apt/sources.list.d/docker.list`, key in
-  `/etc/apt/keyrings/docker.gpg`) and the packages `docker-ce docker-ce-cli
+  `/etc/apt/keyrings/docker.gpg`; the task refuses a key that is not Docker's
+  release key `9DC8 5822 9FC7 DD38 854A E2D8 8D81 803C 0EBF CD88`) and the packages `docker-ce docker-ce-cli
   containerd.io docker-buildx-plugin docker-compose-plugin`.
 - `/etc/docker/daemon.json` with the log rotation. A `daemon.json` you edited
   yourself is left alone (the task warns and skips the log settings).

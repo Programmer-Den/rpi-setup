@@ -58,14 +58,34 @@ docker_install() {
     die "Could not determine OS release (ID='${os_id}', VERSION_CODENAME='${vcode}'). Docker's apt repo needs both."
   fi
 
-  apt_install ca-certificates curl
+  apt_install ca-certificates curl gnupg
   install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL "https://download.docker.com/linux/${os_id}/gpg" | gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
+  local key
+  key="$(mktemp)"
+  curl -fsSL -o "$key" "https://download.docker.com/linux/${os_id}/gpg" ||
+    { rm -f "$key"; die "Could not download Docker's signing key from https://download.docker.com/linux/${os_id}/gpg; check the network and re-run"; }
+  # Only Docker's own release key may sign the packages that run as root.
+  if ! docker_key_ok "$key"; then
+    rm -f "$key"
+    die "The key from download.docker.com is not Docker's release key ($docker_key_fpr); nothing was installed"
+  fi
+  gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg <"$key"
+  rm -f "$key"
   chmod a+r /etc/apt/keyrings/docker.gpg
   echo "deb [arch=${arch} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${os_id} ${vcode} stable" >/etc/apt/sources.list.d/docker.list
 
   apt_update_now
   DEBIAN_FRONTEND=noninteractive apt-get install -y "${APT_DPKG_OPTS[@]}" docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+}
+
+# Fingerprint of Docker's apt release key (docs.docker.com/engine/install/debian).
+docker_key_fpr=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+
+# True if key file $1 holds exactly one primary key: Docker's release key.
+docker_key_ok() {
+  local fprs
+  fprs="$(gpg --batch --show-keys --with-colons "$1" 2>/dev/null | awk -F: '$1 == "pub" { p = 1; next } $1 == "fpr" && p { print $10; p = 0 }')" || return 1
+  [[ "$fprs" == "$docker_key_fpr" ]]
 }
 
 # Log rotation for every container (3 files of 10 MB), so logs cannot fill

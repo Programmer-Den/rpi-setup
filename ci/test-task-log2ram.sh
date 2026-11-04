@@ -80,4 +80,9 @@ assert_contains "run: journal too large"    "at most 3/4"                   "$(c
 assert_contains "run: bad sync time"        "LOG2RAM_SYNC must be"          "$(check 128M 64M 'hourly;x')"
 assert_lacks    "run: nothing installed on bad settings" "apt_installed called" "$(check 128M 100M)"
 
+# --- the azlux repository may only bring log2ram ---------------------------------
+pin="$(log2ram_pin)"
+assert_contains "pin: log2ram from azlux" $'Package: log2ram\nPin: origin packages.azlux.fr\nPin-Priority: 500' "$pin"
+assert_contains "pin: nothing else from azlux" $'Package: *\nPin: origin packages.azlux.fr\nPin-Priority: 1' "$pin"
+
 finish_tests

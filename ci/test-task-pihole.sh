@@ -15,7 +15,10 @@ TASKS=()
 
 # --- The installer: a warning, never a question --------------------------------
 assert_contains "the curl|bash warning is printed" 'curl ... | bash' "$(declare -f run_pihole)"
-assert_contains "the installer always runs unattended" 'bash /dev/stdin --unattended' "$(declare -f run_pihole)"
+# shellcheck disable=SC2016 # the literal text of the function
+assert_contains "the installer always runs unattended" 'bash "$installer" --unattended' "$(declare -f run_pihole)"
+assert_lacks "the installer is never piped into bash" '| bash' "$(declare -f run_pihole | grep -v warn)"
+assert_contains "the log records the installer's checksum" 'Pi-hole installer SHA-256' "$(declare -f run_pihole)"
 assert_eq "no question is asked" "" "$(grep -n 'read -r -p' "$ROOT/tasks/pihole.sh" || true)"
 
 # --- PIHOLE_DB_INTERVAL: seconds between database writes ---------------------

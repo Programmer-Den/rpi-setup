@@ -32,7 +32,8 @@ again ([below](#pitfalls)).
 
 - System user `rpi-runner` (stable UID via `assign_uid`) and the newest
   GitHub Actions runner in `/opt/rpi-runner`, checked against the SHA-256
-  GitHub publishes, running as a systemd service. It updates itself.
+  GitHub publishes (a release without a published checksum is refused),
+  running as a systemd service. It updates itself.
 - `/usr/local/sbin/rpi-setup-deploy`, the only command `rpi-runner` may run as
   root (`/etc/sudoers.d/rpi-setup-runner`). It accepts `--branch` (only from
   `RUNNER_BRANCHES`), `--config` (a file the caller can read), `--tasks`
@@ -94,8 +95,14 @@ The full output of both steps stays on the Pi in `/var/log/rpi-setup-deploy/`.
 
 ## Pitfalls
 
-- Anyone who can run workflows in the private repository can run `setup.sh`
-  as root on the Pi. Keep it private and keep two-factor login on GitHub.
+- The runner account is as good as root: the deploy command is its only
+  root command, but `--config` installs whatever settings the workflow
+  hands it, and the settings decide what runs as root (which images, which
+  folders a container gets). So anyone who can run workflows in, or push to,
+  the private repository is root on the Pi, and so is anyone who can push to
+  a branch of rpi-setup listed in `RUNNER_BRANCHES`. Keep the repository
+  private, keep two-factor login on GitHub, and treat a token that can push
+  there like a root password.
 - A runner on a public repository would let pull requests from strangers run
   code on the Pi. Make sure `RUNNER_REPO` names a private repository.
 - A deploy stops if the checkout on the Pi has local commits or changes
