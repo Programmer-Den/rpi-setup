@@ -27,6 +27,7 @@ The private repository's layout, workflow and step-by-step setup are in
 registers. A re-run with changed values warns and says how to register
 again ([below](#pitfalls)).
 | `RUNNER_BRANCHES` | `main` | Branches of this repository a deploy may switch the Pi to. |
+| `RUNNER_WORKFLOW_BRANCH` | `main` | Branch of your private repository whose workflows may run on the runner; see [Which jobs the runner takes](#which-jobs-the-runner-takes). |
 
 ## What it installs
 
@@ -35,7 +36,8 @@ again ([below](#pitfalls)).
   GitHub publishes, running as a systemd service. It updates itself.
 - `/usr/local/sbin/rpi-setup-deploy`, the only command `rpi-runner` may run as
   root (`/etc/sudoers.d/rpi-setup-runner`). It accepts `--branch` (only from
-  `RUNNER_BRANCHES`), `--config` (a file the caller can read), `--tasks`
+  `RUNNER_BRANCHES`), `--commit` (a full commit id on that branch to deploy
+  instead of its tip), `--config` (a file the caller can read), `--tasks`
   (names of `tasks/<name>.sh` in the checkout; nothing starting with `-`),
   `--skip` (tasks to leave out of this run, same rules) and `--update`.
   After updating the checkout it writes itself again from the checkout's
@@ -48,9 +50,37 @@ again ([below](#pitfalls)).
   recorded task that was removed from rpi-setup (such as `monitoring`) is
   skipped, and the next `setup.sh` run drops it from the file.
 
+- `/usr/local/libexec/rpi-setup/runner-job-started`, run by the runner before
+  every job (a systemd drop-in of the runner's unit sets
+  `ACTIONS_RUNNER_HOOK_JOB_STARTED`). See below.
+
+## Which jobs the runner takes
+
+Every job on the runner can call the deploy command, and a job can hand it a
+settings file of its own, so a job on the runner is as good as root on the
+Pi. GitHub gives a job to a runner by its labels alone: a workflow pushed to
+any branch of the private repository, or *Run workflow* with another branch
+picked under *Use workflow from*, would reach the Pi too. So before each job
+the runner runs the job-started hook, which fails the job before its first
+step unless it is
+
+- a manual run (*Run workflow*, `workflow_dispatch`),
+- of a workflow of `RUNNER_REPO`,
+- from its branch `RUNNER_WORKFLOW_BRANCH` (default `main`).
+
+The workflow log's *Set up runner* step says why a job was refused. Protect
+that branch at GitHub too (*Settings > Rules > Rulesets*: block force pushes
+and deletion, require a pull request), so a change to it is always seen.
+A runner set up before the hook existed gets it with *Deploy to Pi* and the
+task `runner`; the runner restarts two minutes later to load it.
+
 ## What a deploy does
 
-1. Fast-forwards this repository's checkout on the Pi to the chosen branch.
+1. Fast-forwards this repository's checkout on the Pi to the chosen branch,
+   or, with `--commit`, moves it to exactly that commit of the branch (also
+   back to an older one). The private repository's workflows pass the commit
+   of their `rpi-setup` submodule, so the Pi runs the code their *Check*
+   tested, not whatever the branch holds at that moment.
 2. Installs `pis/<pi>/rpi-setup.env` from the private repository as
    `/etc/rpi-setup/rpi-setup.env` (root, 0600), if the workflow's *settings*
    box is ticked.

@@ -27,7 +27,7 @@ jobs:
     name: Syntax check, lint, and task registry
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # gitleaks reads the commits of the pull request or push.
           fetch-depth: 0
@@ -89,7 +89,7 @@ jobs:
     name: Unit tests (lib, setup.sh, flash.sh)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Test lib/common.sh and host/flash.sh helpers
         run: sudo bash ci/test-lib.sh
@@ -110,7 +110,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Provision Docker tasks
         env:
@@ -120,7 +120,7 @@ jobs:
 
       - name: Upload logs on failure
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: docker-smoke-logs
           path: ci-logs/
@@ -135,7 +135,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Test lib/containers.sh
         run: sudo bash ci/test-containers.sh
@@ -153,7 +153,7 @@ jobs:
     if: ${{ !cancelled() && needs.container-helpers.result == 'success' }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Run every ci/smoke-container-*.sh
         run: |
@@ -191,7 +191,7 @@ jobs:
     steps:
       # host/flash.sh resolves the gate's "latest" image (prepare-image calls
       # its latest_release); config/ holds the task settings setup.sh splits.
-      - uses: dorny/paths-filter@v4.0.3
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         if: github.event_name == 'pull_request'
         with:
@@ -208,7 +208,7 @@ jobs:
 
       # A file counts as code when it matches every pattern here; that
       # quantifier would break the provision filter, hence a second step.
-      - uses: dorny/paths-filter@v4.0.3
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: code
         if: github.event_name == 'pull_request'
         with:
@@ -240,7 +240,7 @@ jobs:
         release: [bookworm, latest]
         group: [system, web]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Prepare Raspberry Pi OS image
         id: image
@@ -307,7 +307,7 @@ jobs:
       # <workdir>/ci-logs on failure; /workspace is the bind-mounted checkout.
       - name: Upload guest logs on failure
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: provision-gate-logs-${{ matrix.release }}-${{ matrix.group }}
           path: ci-logs/
@@ -320,7 +320,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # piqemu-action can only boot Bookworm (its DTB build is Bookworm-specific).
       - name: Prepare Raspberry Pi OS image
@@ -377,7 +377,7 @@ jobs:
 
       - name: Upload guest logs on failure
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: provision-qemu-logs
           path: ${{ runner.temp }}/ci-logs/
