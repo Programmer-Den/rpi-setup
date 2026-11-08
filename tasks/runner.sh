@@ -15,11 +15,15 @@ RPI_RUNNER_USER=rpi-runner
 RPI_RUNNER_DIR=/opt/rpi-runner
 RPI_DEPLOY_CMD=/usr/local/sbin/rpi-setup-deploy
 RPI_DEPLOY_SUDOERS=/etc/sudoers.d/rpi-setup-runner
+# Run by the runner before every job; refuses jobs that are not a manual run
+# of a workflow from RUNNER_WORKFLOW_BRANCH (see runner_job_hook_script).
+RPI_RUNNER_JOB_HOOK=/usr/local/libexec/rpi-setup/runner-job-started
 # Tasks that finished at least once, one per line; written by setup.sh.
 RPI_SETUP_DONE_FILE="${RPI_SETUP_DONE_FILE:-/var/lib/rpi-setup/tasks.done}"
 
 run_runner() {
-  : "${RUNNER_REPO:=}" "${RUNNER_TOKEN:=}" "${RUNNER_NAME:=}" "${RUNNER_LABELS:=}" "${RUNNER_BRANCHES:=main}"
+  : "${RUNNER_REPO:=}" "${RUNNER_TOKEN:=}" "${RUNNER_NAME:=}" "${RUNNER_LABELS:=}" "${RUNNER_BRANCHES:=main}" \
+    "${RUNNER_WORKFLOW_BRANCH:=main}"
   [[ -n "$RUNNER_NAME" ]] || RUNNER_NAME="$(hostname)"
   [[ -n "$RUNNER_LABELS" ]] || RUNNER_LABELS="$RUNNER_NAME"
   runner_check_settings
@@ -76,10 +80,74 @@ run_runner() {
 
   # svc.sh status exits 3 for an installed but stopped service, so it cannot
   # tell "not installed" apart; the unit file can.
-  ( cd "$RPI_RUNNER_DIR" && { runner_service_installed "$RPI_RUNNER_DIR" || ./svc.sh install "$RPI_RUNNER_USER" >/dev/null; } && ./svc.sh start >/dev/null ) ||
+  ( cd "$RPI_RUNNER_DIR" && { runner_service_installed "$RPI_RUNNER_DIR" || ./svc.sh install "$RPI_RUNNER_USER" >/dev/null; } ) ||
+    die "Could not install the runner service (see: cd $RPI_RUNNER_DIR && sudo ./svc.sh status)"
+  runner_install_job_hook "$RPI_RUNNER_DIR"
+  ( cd "$RPI_RUNNER_DIR" && ./svc.sh start >/dev/null ) ||
     die "Could not start the runner service (see: cd $RPI_RUNNER_DIR && sudo ./svc.sh status)"
   say "Runner service running. Deploy from https://github.com/$RUNNER_REPO/actions with the 'Deploy to Pi' workflow."
   info "The deploy command accepts these branches of this repo: $RUNNER_BRANCHES"
+  info "The runner only takes manual runs (Run workflow) of $RUNNER_REPO's workflows from its branch $RUNNER_WORKFLOW_BRANCH"
+}
+
+# Install the job-started hook (runner_job_hook_script) for the runner in $1
+# through a systemd drop-in of its unit. Both files belong to root, so a job,
+# which runs as the runner account, cannot change or remove them. A changed
+# drop-in restarts the runner; inside a deploy (RPI_SETUP_FROM_DEPLOY) that
+# job is still running, so the restart waits two minutes.
+runner_install_job_hook() {
+  local dir="$1" unit dropin changed=0
+  unit="$(head -n1 "$dir/.service")"
+  dropin="${RPI_RUNNER_UNIT_DIR:-/etc/systemd/system}/$unit.d/rpi-setup-job-check.conf"
+  install -m 0755 -d "$(dirname "$RPI_RUNNER_JOB_HOOK")" "$(dirname "$dropin")"
+  if runner_job_hook_script "$RUNNER_REPO" "$RUNNER_WORKFLOW_BRANCH" | write_if_changed "$RPI_RUNNER_JOB_HOOK" 0755; then
+    say "Wrote $RPI_RUNNER_JOB_HOOK"
+  fi
+  if printf '# Written by rpi-setup (tasks/runner.sh).\n[Service]\nEnvironment=ACTIONS_RUNNER_HOOK_JOB_STARTED=%s\n' "$RPI_RUNNER_JOB_HOOK" |
+       write_if_changed "$dropin" 0644; then
+    say "Wrote $dropin"
+    changed=1
+  fi
+  [[ $changed -eq 1 ]] || return 0
+  systemctl daemon-reload
+  systemctl is-active --quiet "$unit" || return 0
+  if [[ -n "${RPI_SETUP_FROM_DEPLOY:-}" ]] &&
+     systemd-run --quiet --collect --on-active=120 systemctl restart "$unit"; then
+    info "The runner restarts in two minutes, once this deploy is done, to load the job check."
+  else
+    systemctl restart "$unit"
+  fi
+}
+
+# Print the runner's job-started hook. The runner runs it before each job's
+# first step and fails the job when it exits non-zero, so nothing of the job
+# runs. It accepts only manual runs (workflow_dispatch) of a workflow of
+# repository $1 from its branch $2: a workflow pushed to another branch, or
+# "Run workflow" from another branch, never reaches the Pi, where every job
+# can run the deploy command as root. GITHUB_* cannot be set by a workflow.
+runner_job_hook_script() {
+  printf '#!/usr/bin/env bash\n'
+  printf '# Written by rpi-setup (tasks/runner.sh). Change RUNNER_REPO or\n'
+  printf '# RUNNER_WORKFLOW_BRANCH and re-run "sudo bash setup.sh runner" instead.\n'
+  printf 'set -euo pipefail\n'
+  printf 'repo=%q\n' "$1"
+  printf 'ref=%q\n' "refs/heads/$2"
+  cat <<'EOF2'
+refuse() {
+  echo "rpi-setup: this runner only takes manual runs (Run workflow) of $repo's workflows from ${ref#refs/heads/}; $1" >&2
+  exit 1
+}
+[[ "${GITHUB_REPOSITORY:-}" == "$repo" || "${GITHUB_REPOSITORY,,}" == "${repo,,}" ]] ||
+  refuse "this job is from ${GITHUB_REPOSITORY:-an unknown repository}"
+[[ "${GITHUB_EVENT_NAME:-}" == workflow_dispatch ]] ||
+  refuse "this job was started by ${GITHUB_EVENT_NAME:-an unknown event}"
+[[ "${GITHUB_REF:-}" == "$ref" ]] ||
+  refuse "this job runs from ${GITHUB_REF:-an unknown ref}"
+workflow="${GITHUB_WORKFLOW_REF:-}"
+[[ "${workflow,,}" == "${repo,,}/.github/workflows/"*"@${ref,,}" ]] ||
+  refuse "this job runs the workflow ${workflow:-(unknown)}"
+echo "rpi-setup: job accepted: ${workflow#*/.github/workflows/}"
+EOF2
 }
 
 # Dies naming the setting if a RUNNER_* value is unusable.
@@ -96,6 +164,10 @@ runner_check_settings() {
   [[ "$RUNNER_LABELS" =~ ^[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*$ ]] ||
     die "RUNNER_LABELS must be comma separated words such as pi5,home (got '$RUNNER_LABELS')"
   [[ -n "$RUNNER_BRANCHES" ]] || die 'RUNNER_BRANCHES must name at least one branch, e.g. main'
+  if [[ ! "${RUNNER_WORKFLOW_BRANCH:-main}" =~ ^[A-Za-z0-9._/-]+$ || "${RUNNER_WORKFLOW_BRANCH:-main}" == -* ]] ||
+     ! git check-ref-format --branch "${RUNNER_WORKFLOW_BRANCH:-main}" >/dev/null 2>&1; then
+    die "RUNNER_WORKFLOW_BRANCH: '$RUNNER_WORKFLOW_BRANCH' is not a branch name"
+  fi
   for b in ${RUNNER_BRANCHES//,/ }; do
     if [[ ! "$b" =~ ^[A-Za-z0-9._/-]+$ || "$b" == -* ]] || ! git check-ref-format --branch "$b" >/dev/null 2>&1; then
       die "RUNNER_BRANCHES: '$b' is not a branch name"
@@ -171,7 +243,7 @@ runner_deploy_script() {
   printf '#!/usr/bin/env bash\n'
   printf '# Written by rpi-setup (tasks/runner.sh). Change the RUNNER_* settings and\n'
   printf '# re-run "sudo bash setup.sh runner" instead of editing this file.\n'
-  printf '# Usage: sudo %s [--branch NAME] [--config FILE] [--tasks "a b"] [--skip "c d"] [--update]\n' "$RPI_DEPLOY_CMD"
+  printf '# Usage: sudo %s [--branch NAME] [--commit SHA] [--config FILE] [--tasks "a b"] [--skip "c d"] [--update]\n' "$RPI_DEPLOY_CMD"
   printf 'set -euo pipefail\n'
   printf 'DP_DIR=%q\n' "$dir"
   printf 'DP_BRANCHES=%q\n' "${branches//,/ }"
@@ -207,20 +279,21 @@ deploy_run_git() {
   fi
 }
 
-# Parse and check the arguments into DP_BRANCH, DP_CONFIG, DP_TASKS, DP_SKIP
-# and DP_UPDATE (1 with --update).
+# Parse and check the arguments into DP_BRANCH, DP_COMMIT, DP_CONFIG,
+# DP_TASKS, DP_SKIP and DP_UPDATE (1 with --update).
 # Everything comes from a workflow, so anything unexpected stops the deploy.
 # shellcheck disable=SC2153  # DP_BRANCHES is set at the top of the deploy command
 deploy_run_args() {
-  DP_BRANCH="${DP_BRANCHES%% *}" DP_CONFIG='' DP_TASKS='' DP_SKIP='' DP_UPDATE=0
+  DP_BRANCH="${DP_BRANCHES%% *}" DP_COMMIT='' DP_CONFIG='' DP_TASKS='' DP_SKIP='' DP_UPDATE=0
   local opt words
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --branch|--config|--tasks|--skip)
+      --branch|--commit|--config|--tasks|--skip)
         # As the last argument "shift 2" would fail and spin this loop forever.
         if [[ $# -lt 2 ]]; then echo "rpi-setup-deploy: $1 needs a value" >&2; return 2; fi
         case "$1" in
           --branch) DP_BRANCH="$2" ;;
+          --commit) DP_COMMIT="$2" ;;
           --config) DP_CONFIG="$2" ;;
           --tasks) DP_TASKS="$2" ;;
           --skip) DP_SKIP="$2" ;;
@@ -234,6 +307,12 @@ deploy_run_args() {
     *" $DP_BRANCH "*) ;;
     *) echo "rpi-setup-deploy: branch $(printf '%q' "$DP_BRANCH") is not allowed (RUNNER_BRANCHES: $DP_BRANCHES)" >&2; return 2 ;;
   esac
+  # A full commit id only: a short one or a ref name could mean something
+  # else after the fetch.
+  if [[ -n "$DP_COMMIT" && ! "$DP_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "rpi-setup-deploy: --commit must be a full 40-character commit id (got $(printf '%q' "$DP_COMMIT"))" >&2
+    return 2
+  fi
   DP_TASKS="${DP_TASKS//,/ }" DP_SKIP="${DP_SKIP//,/ }"
   for opt in tasks skip; do
     [[ $opt == tasks ]] && words="$DP_TASKS" || words="$DP_SKIP"
@@ -360,7 +439,7 @@ deploy_run_config() {
 # containers of the DP_SKIP tasks), then setup.sh only for the new tasks.
 deploy_run() {
   deploy_run_args "$@" || return $?
-  local owner old new list log stamp rc=0
+  local owner old new target list log stamp rc=0
   local -a tasks=() upd=(--containers-only)
   owner="$(deploy_run_owner)" || return 1
   deploy_run_check_config || return 1
@@ -372,12 +451,32 @@ deploy_run() {
     deploy_run_git checkout --quiet "$DP_BRANCH" 2>/dev/null ||
       deploy_run_git checkout --quiet -b "$DP_BRANCH" FETCH_HEAD
   fi
-  deploy_run_git merge --ff-only --quiet FETCH_HEAD || {
-    echo "rpi-setup-deploy: cannot fast-forward $DP_DIR to origin/$DP_BRANCH; local commits or changes are in the way (git -C $DP_DIR status)" >&2
-    return 1
-  }
+  # --commit: exactly that commit, which must be on the branch, such as the
+  # one the private repository's submodule pins and its checks tested;
+  # otherwise the branch tip. An older commit of the branch than the
+  # checkout's goes back to it, as long as the checkout has no commits of
+  # its own.
+  target=FETCH_HEAD
+  if [[ -n "$DP_COMMIT" ]]; then
+    deploy_run_git merge-base --is-ancestor "$DP_COMMIT" FETCH_HEAD 2>/dev/null || {
+      echo "rpi-setup-deploy: commit ${DP_COMMIT:0:7} is not on origin/$DP_BRANCH" >&2
+      return 1
+    }
+    target="$DP_COMMIT"
+  fi
+  if [[ -n "$DP_COMMIT" && "$old" != "$DP_COMMIT" ]] && deploy_run_git merge-base --is-ancestor "$DP_COMMIT" HEAD; then
+    { deploy_run_git merge-base --is-ancestor HEAD FETCH_HEAD && deploy_run_git reset --keep --quiet "$DP_COMMIT"; } || {
+      echo "rpi-setup-deploy: cannot move $DP_DIR back to ${DP_COMMIT:0:7}; local commits or changes are in the way (git -C $DP_DIR status)" >&2
+      return 1
+    }
+  else
+    deploy_run_git merge --ff-only --quiet "$target" || {
+      echo "rpi-setup-deploy: cannot fast-forward $DP_DIR to origin/$DP_BRANCH; local commits or changes are in the way (git -C $DP_DIR status)" >&2
+      return 1
+    }
+  fi
   new="$(deploy_run_git rev-parse HEAD)"
-  echo "rpi-setup-deploy: $DP_DIR on $DP_BRANCH at ${new:0:7} (was ${old:0:7})"
+  echo "rpi-setup-deploy: $DP_DIR on $DP_BRANCH at ${new:0:7}${DP_COMMIT:+ (pinned)} (was ${old:0:7})"
   if ! deploy_run_refresh; then
     exec 9>&-
     DP_FRESH=1 exec "$DP_SELF" "$@"
@@ -408,7 +507,7 @@ deploy_run() {
   echo "rpi-setup-deploy: running setup.sh ${tasks[*]} (full output on the Pi: $log)"
   local src=0
   ( umask 077
-    SUDO_USER="$owner" SUDO_UID="$(id -u "$owner")" SUDO_GID="$(id -g "$owner")" \
+    SUDO_USER="$owner" SUDO_UID="$(id -u "$owner")" SUDO_GID="$(id -g "$owner")" RPI_SETUP_FROM_DEPLOY=1 \
       RPI_SETUP_CONFIG_DIR="$DP_CONFIG_DIR" bash "$DP_DIR/setup.sh" "${tasks[@]}" </dev/null >"$log" 2>&1 ) || src=$?
   sed -n '/^Summary:/,$p' "$log"
   [[ $src -eq 0 ]] || deploy_run_errors "$log"

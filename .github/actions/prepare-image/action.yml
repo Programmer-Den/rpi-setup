@@ -64,7 +64,7 @@ runs:
 
     - name: Restore cached image
       id: restore
-      uses: actions/cache/restore@v6
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.paths.outputs.xz }}
         key: raspios-arm64-lite-${{ steps.paths.outputs.version }}
@@ -88,7 +88,7 @@ runs:
     # save-always input is deprecated and a no-op.)
     - name: Save image to cache
       if: steps.restore.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v6
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.paths.outputs.xz }}
         key: ${{ steps.restore.outputs.cache-primary-key }}

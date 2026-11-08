@@ -34,6 +34,30 @@ assert_ok    "several labels are valid" eval 'L=pi5,home ok'
 assert_fails "labels with spaces are refused" eval 'L="pi5, home" ok'
 assert_ok    "several branches are valid" eval 'B="main, next" ok'
 assert_fails "a bad branch is refused" eval 'B="main;x" ok'
+assert_ok    "a workflow branch is valid" eval '( RUNNER_WORKFLOW_BRANCH=release ok )'
+assert_fails "a bad workflow branch is refused" eval '( RUNNER_WORKFLOW_BRANCH="main;x" ok )'
+
+# --- runner_job_hook_script: only manual runs from the workflow branch --------
+printf '%s\n' "$(runner_job_hook_script Me/rpi-private main)" >"$tmp/hook"
+assert_ok "the job hook is valid bash" bash -n "$tmp/hook"
+hook() { env -i PATH="$PATH" GITHUB_REPOSITORY="${HR-Me/rpi-private}" GITHUB_EVENT_NAME="${HE-workflow_dispatch}" \
+           GITHUB_REF="${HF-refs/heads/main}" GITHUB_WORKFLOW_REF="${HW-Me/rpi-private/.github/workflows/deploy.yml@refs/heads/main}" \
+           bash "$tmp/hook" 2>&1; }
+assert_ok    "a manual run of a deploy workflow from main is accepted" hook
+assert_contains "and the log names the workflow" "job accepted: deploy.yml@refs/heads/main" "$(hook)"
+assert_ok    "the repository's name is compared without case" eval 'HR=me/RPI-private hook'
+assert_fails "a push is refused" eval 'HE=push hook'
+assert_fails "a pull request is refused" eval 'HE=pull_request hook'
+assert_fails "a manual run from another branch is refused" eval 'HF=refs/heads/evil HW=Me/rpi-private/.github/workflows/deploy.yml@refs/heads/evil hook'
+assert_fails "a workflow from another branch is refused" eval 'HW=Me/rpi-private/.github/workflows/deploy.yml@refs/heads/evil hook'
+assert_fails "a tag is refused" eval 'HF=refs/tags/main hook'
+assert_fails "another repository is refused" eval 'HR=other/repo hook'
+assert_fails "a workflow of another repository is refused" eval 'HW=other/repo/.github/workflows/deploy.yml@refs/heads/main hook'
+assert_fails "missing job variables are refused" eval 'HR= HE= HF= HW= hook'
+assert_contains "a refusal says what the runner takes" "only takes manual runs (Run workflow) of Me/rpi-private's workflows from main" "$(HE=push hook || true)"
+assert_contains "and why this job is not one" "started by push" "$(HE=push hook || true)"
+printf '%s\n' "$(runner_job_hook_script 'me/x;reboot' main)" >"$tmp/hook-odd"
+assert_ok "odd characters in the settings are quoted" bash -n "$tmp/hook-odd"
 
 # --- runner_check_registration: changed settings after registration ----------
 mkdir -p "$tmp/reg"
@@ -87,8 +111,13 @@ assert_eq "--skip may be comma separated" "pihole web" "$( (DP_BRANCHES=main; de
 assert_fails "a skipped task with odd characters is refused" args --skip 'web;reboot'
 assert_fails "an option hidden in --skip is refused" args --skip 'web --init-config'
 assert_fails "a missing settings file is refused" args --config "$tmp/nope.env"
+assert_eq "--commit takes a full commit id" "0123456789abcdef0123456789abcdef01234567" \
+    "$( (DP_BRANCHES=main; deploy_run_args --commit 0123456789abcdef0123456789abcdef01234567 && echo "$DP_COMMIT") 2>/dev/null)"
+assert_fails "a short commit id is refused" args --commit 0123456
+assert_fails "a ref name instead of a commit id is refused" args --commit main
+assert_fails "an upper-case or odd commit id is refused" args --commit '0123456789ABCDEF0123456789abcdef01234567'
 # An option as the last argument used to make "shift 2" fail and the loop spin forever.
-for opt in --tasks --skip --branch --config; do
+for opt in --tasks --skip --branch --commit --config; do
     assert_eq "$opt as the last argument is refused, not hung" "rpi-setup-deploy: $opt needs a value" \
         "$( (DP_BRANCHES=main; timeout 5 bash -c "$(declare -f deploy_run_args); DP_BRANCHES=main deploy_run_args --update $opt") 2>&1 || true)"
 done
@@ -231,6 +260,28 @@ out="$(deploy --tasks web --skip web)"
 assert_contains "skipping every task runs nothing" "none recorded" "$out"
 assert_ok "and runs no setup" test ! -e "$tmp/ran"
 assert_fails "an unknown task to skip is refused (a typo)" eval 'deploy --skip wbe >/dev/null'
+
+# --commit: exactly that commit of the branch, also back to an older one.
+tip="$(git -C "$tmp/work" rev-parse HEAD)"
+older="$(git -C "$tmp/work" rev-parse HEAD~2)"
+out="$(deploy --commit "$older" --tasks base)"
+assert_eq "--commit moves the checkout back to an older commit of the branch" "$older" "$(git -C "$tmp/pi" rev-parse HEAD)"
+assert_contains "and the workflow log says it is pinned" "at ${older:0:7} (pinned)" "$out"
+assert_eq "and runs the tasks there" "base cfg=$tmp/etc" "$(cat "$tmp/ran")"
+deploy --commit "$tip" --tasks base >/dev/null
+assert_eq "--commit moves the checkout forward to a newer one" "$tip" "$(git -C "$tmp/pi" rev-parse HEAD)"
+deploy --commit "$tip" --tasks base >/dev/null
+assert_eq "--commit with the checkout already there is fine" "$tip" "$(git -C "$tmp/pi" rev-parse HEAD)"
+git_q -C "$tmp/work" checkout -b side
+git_q -C "$tmp/work" commit --allow-empty -m side
+git_q -C "$tmp/work" push origin side
+side="$(git -C "$tmp/work" rev-parse HEAD)"
+git_q -C "$tmp/work" checkout main
+assert_fails "a commit that is not on the branch is refused" eval 'deploy --commit "$side" --tasks base >/dev/null'
+assert_ok "and runs no setup" test ! -e "$tmp/ran"
+assert_eq "and leaves the checkout alone" "$tip" "$(git -C "$tmp/pi" rev-parse HEAD)"
+assert_contains "the refusal names the branch" "is not on origin/main" "$(deploy --commit "$side" --tasks base || true)"
+assert_fails "an unknown commit is refused" eval 'deploy --commit 0123456789abcdef0123456789abcdef01234567 --tasks base >/dev/null'
 rm -rf "${tmp:?}/etc"
 mkdir -p "$tmp/pi/config"; printf 'X=1\n' >"$tmp/pi/config/rpi-setup.env"
 rm -f "$tmp/ran"
