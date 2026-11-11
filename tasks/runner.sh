@@ -17,7 +17,9 @@ RPI_DEPLOY_CMD=/usr/local/sbin/rpi-setup-deploy
 RPI_DEPLOY_SUDOERS=/etc/sudoers.d/rpi-setup-runner
 # Run by the runner before every job; refuses jobs that are not a manual run
 # of a workflow from RUNNER_WORKFLOW_BRANCH (see runner_job_hook_script).
-RPI_RUNNER_JOB_HOOK=/usr/local/libexec/rpi-setup/runner-job-started
+# The runner only runs a hook whose name ends in .sh, .ps1 or .js and fails
+# every job otherwise.
+RPI_RUNNER_JOB_HOOK=/usr/local/libexec/rpi-setup/runner-job-started.sh
 # Tasks that finished at least once, one per line; written by setup.sh.
 RPI_SETUP_DONE_FILE="${RPI_SETUP_DONE_FILE:-/var/lib/rpi-setup/tasks.done}"
 
@@ -103,6 +105,8 @@ runner_install_job_hook() {
   if runner_job_hook_script "$RUNNER_REPO" "$RUNNER_WORKFLOW_BRANCH" | write_if_changed "$RPI_RUNNER_JOB_HOOK" 0755; then
     say "Wrote $RPI_RUNNER_JOB_HOOK"
   fi
+  # The hook's old name without .sh, which the runner refused to run.
+  rm -f "${RPI_RUNNER_JOB_HOOK%.sh}"
   if printf '# Written by rpi-setup (tasks/runner.sh).\n[Service]\nEnvironment=ACTIONS_RUNNER_HOOK_JOB_STARTED=%s\n' "$RPI_RUNNER_JOB_HOOK" |
        write_if_changed "$dropin" 0644; then
     say "Wrote $dropin"

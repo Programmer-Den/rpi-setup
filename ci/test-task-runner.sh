@@ -40,6 +40,7 @@ assert_fails "a bad workflow branch is refused" eval '( RUNNER_WORKFLOW_BRANCH="
 # --- runner_job_hook_script: only manual runs from the workflow branch --------
 printf '%s\n' "$(runner_job_hook_script Me/rpi-private main)" >"$tmp/hook"
 assert_ok "the job hook is valid bash" bash -n "$tmp/hook"
+assert_ok "the job hook's name ends in .sh, the runner refuses to run it otherwise" eval '[[ "$RPI_RUNNER_JOB_HOOK" == *.sh ]]'
 hook() { env -i PATH="$PATH" GITHUB_REPOSITORY="${HR-Me/rpi-private}" GITHUB_EVENT_NAME="${HE-workflow_dispatch}" \
            GITHUB_REF="${HF-refs/heads/main}" GITHUB_WORKFLOW_REF="${HW-Me/rpi-private/.github/workflows/deploy.yml@refs/heads/main}" \
            bash "$tmp/hook" 2>&1; }
