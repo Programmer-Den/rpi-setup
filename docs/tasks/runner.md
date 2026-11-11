@@ -51,9 +51,10 @@ again ([below](#pitfalls)).
   recorded task that was removed from rpi-setup (such as `monitoring`) is
   skipped, and the next `setup.sh` run drops it from the file.
 
-- `/usr/local/libexec/rpi-setup/runner-job-started`, run by the runner before
-  every job (a systemd drop-in of the runner's unit sets
-  `ACTIONS_RUNNER_HOOK_JOB_STARTED`). See below.
+- `/usr/local/libexec/rpi-setup/runner-job-started.sh`, run by the runner
+  before every job (a systemd drop-in of the runner's unit sets
+  `ACTIONS_RUNNER_HOOK_JOB_STARTED`; the runner only runs a hook whose name
+  ends in `.sh`). See below.
 
 ## Which jobs the runner takes
 
