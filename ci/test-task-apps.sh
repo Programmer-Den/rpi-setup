@@ -39,6 +39,13 @@ for good in ab x1 2048-game 1e3x 0x1g den-watch truely null-game; do
   assert_eq "list: name '$good' accepted" "$good 8091 8080 you/game" "$(apps_parse "$good:8091=you/game")"
 done
 
+# --- APPS_DATA --------------------------------------------------------------------
+assert_eq "data: apps that keep data, commas and repeats" $'game\nsite' "$(apps_data_parse 'game, site game' ' game site ')"
+assert_eq "data: empty" "" "$(apps_data_parse '' ' game ')"
+assert_fails "data: an app not in APPS_LIST refused" apps_data_parse 'other' ' game '
+( apps_data_parse 'other' ' game ' ) >/dev/null 2>"$TMP/err" || true
+assert_contains "data: the unknown app named in the error" "APPS_DATA: 'other'" "$(cat "$TMP/err")"
+
 # --- the compose file -----------------------------------------------------------
 out="$(apps_parse 'game:8091=ghcr.io/you/game:latest site:8092:80=you/site' | apps_compose 1234)"
 assert_contains "compose: image" 'image: "ghcr.io/you/game:latest"' "$out"
@@ -53,6 +60,10 @@ assert_eq "compose: every app read-only" 2 "$(grep -c 'read_only: true' <<<"$out
 assert_eq "compose: every app without capabilities" 2 "$(grep -c -- '- ALL' <<<"$out")"
 assert_eq "compose: every app without new privileges" 2 "$(grep -c 'no-new-privileges:true' <<<"$out")"
 assert_contains "compose: /tmp in memory, owned by the user" "/tmp:mode=1700,uid=1234,gid=1234" "$out"
+assert_eq "compose: no data folder unless asked" 0 "$(grep -c ':/data' <<<"$out")"
+out="$(apps_parse 'game:8091=ghcr.io/you/game:latest site:8092:80=you/site' | apps_compose 1234 'site')"
+assert_eq "compose: data folder only for the app in APPS_DATA" 1 "$(grep -c ':/data' <<<"$out")"
+assert_contains "compose: data folder as /data" '"./data/site:/data"' "$(sed -n '/^  site:/,$p' <<<"$out")"
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   printf '%s\n' "$out" >"$TMP/docker-compose.yml"
   assert_ok "compose: docker compose accepts it" docker compose -f "$TMP/docker-compose.yml" config -q
@@ -121,6 +132,20 @@ compose="$TMP/opt/apps/docker-compose.yml"
 ( APPS_LIST='game:8091=you/game,site:8092=you/site'; run_apps ) >/dev/null 2>&1
 assert_contains "run: compose file written" "container_name: site" "$(cat "$compose")"
 assert_eq "run: pulled, started and every app checked to stay up" $'pull\nup game\nwait game\nwait site' "$(cat "$TMP/calls")"
+assert_eq "run: no data folder unless asked" 0 "$(grep -c ':/data' "$compose")"
+( APPS_LIST='game:8091=you/game'; APPS_DATA='site'; run_apps ) >/dev/null 2>"$TMP/err" || true
+assert_contains "run: APPS_DATA naming an app not in APPS_LIST stops the task" "APPS_DATA: 'site'" "$(cat "$TMP/err")"
+: >"$TMP/calls"
+# Only the data folder's install is recorded: its owner needs root, so the
+# test makes the folder without one.
+install() {
+  if [[ " $* " == *" -o "* ]]; then echo "install $*" >>"$TMP/calls"; command install -d "${@: -1}"
+  else command install "$@"; fi
+}
+( APPS_LIST='game:8091=you/game,site:8092=you/site'; APPS_DATA='site'; run_apps ) >/dev/null 2>&1
+unset -f install
+assert_contains "run: data folder made for the app, only for its user" "install -m 0700 -o 1234 -g 1234 -d $TMP/opt/apps/data/site" "$(cat "$TMP/calls")"
+assert_contains "run: compose file mounts it" '"./data/site:/data"' "$(cat "$compose")"
 : >"$TMP/calls"
 ( APPS_LIST=''; run_apps ) >/dev/null 2>&1
 assert_contains "run: an emptied list takes the apps down" "down --remove-orphans" "$(cat "$TMP/calls")"

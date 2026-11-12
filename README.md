@@ -69,7 +69,7 @@ how to reach it and what to watch out for.
 | [`netalertx`](docs/tasks/netalertx.md) | NetAlertX LAN device tracker on `http://<pi>:20211`, with a login (needs `docker`) | `NETALERTX_PASSWORD` (empty = generated) |
 | [`teamspeak`](docs/tasks/teamspeak.md) | TeamSpeak 6 server, voice `:9987`, file `:30033`, web query `:10080`, who is online and when on the start page (needs `docker`, 64-bit OS) | `TEAMSPEAK_QUERY_ADMIN_PASSWORD` |
 | [`denwatcher`](docs/tasks/denwatcher.md) | Den-Watcher website with the Pi's CPU, memory and temperatures on `http://<pi>:9393` (needs `docker`, 64-bit OS) | `DENWATCHER_PORT` |
-| [`apps`](docs/tasks/apps.md) | Your own web apps from container images, such as a game your CI builds, each on its own port with a card on the start page (needs `docker`, 64-bit OS) | `APPS_LIST` |
+| [`apps`](docs/tasks/apps.md) | Your own web apps from container images, such as a game your CI builds, each on its own port with a card on the start page (needs `docker`, 64-bit OS) | `APPS_LIST`, `APPS_DATA` |
 | [`runner`](docs/tasks/runner.md) | GitHub runner for a manual *Deploy to Pi* button in your private settings repository ([template](templates/private-repo/README.md)) | `RUNNER_REPO`, `RUNNER_TOKEN` (once) |
 | [`firewall`](docs/tasks/firewall.md) | nftables firewall: SSH and the installed services' ports open, the rest dropped (run it last, re-run after adding a task) | `FIREWALL_ALLOW_FROM`, `FIREWALL_EXTRA_PORTS` |
 
