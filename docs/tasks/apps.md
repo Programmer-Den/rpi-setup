@@ -18,7 +18,7 @@ are taken down again.
 | Setting | Default | Meaning |
 |---------|---------|---------|
 | `APPS_LIST` | empty (none) | Apps to run, as `name:port=image`, separated by spaces or commas, such as `game:8091=ghcr.io/you/game:latest`. The name (lowercase letters, digits and `-`, at least two characters with a letter; not a word or number the compose file reads differently, such as `true`, `null` or `1e3`, and not the name of another task's container, such as `pihole`) names the container and its card; the port is the app's port on the Pi (TCP), which no other container may publish. Add `:container-port` after the port when the app does not listen on 8080 inside its container: `game:8091:80=...`. An emptied list stops the apps; empty with none running, the task does nothing. |
-| `APPS_DATA` | empty (none) | Apps from `APPS_LIST` that keep data, separated by spaces or commas, such as `planner`. Each gets the folder `/opt/apps/data/<name>`, owned by the apps' user and closed to everyone else, as `/data` in its container: the one place besides `/tmp` it can write, and the one that survives restarts, updates and redeploys. A name that is not in `APPS_LIST` stops the task. Taking an app out of the list keeps its folder. |
+| `APPS_DATA` | empty (none) | Apps from `APPS_LIST` that keep data, separated by spaces or commas, such as `game`. Each gets the folder `/opt/apps/data/<name>`, owned by the apps' user and closed to everyone else, as `/data` in its container: the one place besides `/tmp` it can write, and the one that survives restarts, updates and redeploys. A name that is not in `APPS_LIST` stops the task. Taking an app out of the list keeps its folder. |
 
 ## What it installs and changes
 
