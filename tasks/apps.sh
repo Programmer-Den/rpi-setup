@@ -49,13 +49,28 @@ apps_parse() {
   done
 }
 
-# apps_compose UID < "name port container-port image" lines - the compose
-# file: one container per app, named after it, published on its port, with
-# labels that give it a card on the web task's start page. Every app runs as
-# UID (not root), with no capabilities, a read-only file system and only /tmp
-# writable (in memory), so it keeps nothing between restarts.
+# apps_data_parse DATA NAMES - check APPS_DATA against the app names in
+# NAMES (space separated) and print the apps that keep data, one per line.
+# DATA holds app names separated by spaces or commas.
+apps_data_parse() {
+  local name seen=" "
+  for name in ${1//,/ }; do
+    [[ " $2 " == *" $name "* ]] ||
+      die "APPS_DATA: '$name' is not an app in APPS_LIST; list only apps that APPS_LIST runs"
+    [[ "$seen" != *" $name "* ]] || continue
+    seen+="$name "
+    printf '%s\n' "$name"
+  done
+}
+
+# apps_compose UID [DATA] < "name port container-port image" lines - the
+# compose file: one container per app, named after it, published on its port,
+# with labels that give it a card on the web task's start page. Every app runs
+# as UID (not root), with no capabilities, a read-only file system and only
+# /tmp writable (in memory), so it keeps nothing between restarts; an app
+# named in DATA (space separated) also gets its folder under DIR/data as /data.
 apps_compose() {
-  local uid="$1" name port cport image
+  local uid="$1" data=" ${2:-} " name port cport image
   echo 'services:'
   while read -r name port cport image; do
     cat <<EOF2
@@ -75,6 +90,11 @@ apps_compose() {
       - "/tmp:mode=1700,uid=$uid,gid=$uid,rw,nosuid,nodev,noexec"
     volumes:
       - /etc/localtime:/etc/localtime:ro
+EOF2
+    if [[ "$data" == *" $name "* ]]; then
+      printf '      - "./data/%s:/data"\n' "$name"
+    fi
+    cat <<EOF2
     cap_drop:
       - ALL
     security_opt:
@@ -112,6 +132,8 @@ run_apps() {
   # "up", which would take every app down.
   local name port cport image owner holder names=" "
   while read -r name port cport image; do names+="$name "; done <<<"$apps"
+  local data
+  data="$(apps_data_parse "${APPS_DATA:-}" "$names")"
   while read -r name port cport image; do
     owner="$(port_owner "$port")" || owner=""
     if [[ "$owner" == docker-proxy ]]; then
@@ -129,7 +151,13 @@ run_apps() {
   local uid
   uid="$(assign_uid apps)"
   install -m 0755 -d "$dir"
-  apps_compose "$uid" <<<"$apps" | write_if_changed "$dir/docker-compose.yml" 0644 || true
+  # Each app that keeps data gets its own folder, only for its user. It stays
+  # when the app leaves APPS_DATA or APPS_LIST; the backup task saves it with
+  # the rest of $dir.
+  for name in $data; do
+    install -m 0700 -o "$uid" -g "$uid" -d "$dir/data/$name"
+  done
+  apps_compose "$uid" "${data//$'\n'/ }" <<<"$apps" | write_if_changed "$dir/docker-compose.yml" 0644 || true
 
   # Pulling every run brings a moving tag such as :latest up to date; "up"
   # then recreates only the apps whose image or settings changed, and
