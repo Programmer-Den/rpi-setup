@@ -34,13 +34,15 @@ run_dataden() {
   local dir changed=0
   dir="$(container_dir dataden)"
   install -m 0755 -d "$dir" "$dir/data" "$dir/config"
+  dataden_compose "$DATADEN_IMAGE" | write_if_changed "$dir/docker-compose.yml" 0644 || true
+  # Pulled before the files the container mounts change, so a failed pull
+  # leaves them as the running container has them, and the next run still
+  # sees the change and recreates it.
+  container_pull "$dir"
   dataden_vm_cert "$dir/vm-cert.pem" "$vm" "$DATADEN_VM_PORT" "$fp" && changed=1
   if dataden_caddyfile "$domain" "$vm" "$DATADEN_VM_PORT" "$email" | write_if_changed "$dir/Caddyfile" 0644; then
     changed=1
   fi
-  dataden_compose "$DATADEN_IMAGE" | write_if_changed "$dir/docker-compose.yml" 0644 || true
-
-  container_pull "$dir"
   container_up "$dir" dataden "$changed"
 
   if have curl; then
@@ -132,7 +134,9 @@ dataden_fetch_cert() {
 dataden_caddyfile() {
   local domain="$1" vm="$2" port="$3" email="${4:-}"
   printf '# Managed by rpi-setup (tasks/dataden.sh); changes are overwritten.\n{\n'
-  printf '\tadmin off\n\tauto_https disable_redirects\n'
+  # Only HTTP/1.1 and HTTP/2: HTTP/3 would need UDP 443 open on the router
+  # and the firewall, and browsers would try it first for nothing.
+  printf '\tadmin off\n\tauto_https disable_redirects\n\tservers {\n\t\tprotocols h1 h2\n\t}\n'
   [[ -z "$email" ]] || printf '\temail %s\n' "$email"
   cat <<EOF
 }
@@ -181,28 +185,49 @@ services:
 EOF
 }
 
-# Pi-hole's webserver.port list $1 without its HTTPS entries (flag "s"), so
-# its admin page keeps plain HTTP and leaves 443 to the gateway.
-dataden_pihole_without_tls() {
-  local e out=""
-  for e in ${1//,/ }; do
-    [[ "$e" =~ ^(.*:)?[0-9]+[A-Za-z]*$ && "${e##*[0-9]}" == *s* ]] && continue
-    out+="${out:+,}$e"
-  done
-  printf '%s\n' "$out"
+# Frees TCP 443 for the gateway: Pi-hole's admin page keeps plain HTTP and
+# gives up its HTTPS listener, in its container or on the host. Dies when
+# another program than the gateway's own Caddy holds the port.
+dataden_check_port() {
+  local owner
+  owner="$(port_owner 443)" || return 0
+  if [[ "$owner" == caddy ]] && task_in_container dataden; then
+    return 0
+  fi
+  [[ "$owner" == pihole-FTL ]] ||
+    die "Port 443 is used by '$owner'; the DATA-DEN gateway needs it. Stop that program, then run this task again"
+  dataden_pihole_off_443
 }
 
-# Dies when another program than the gateway's Caddy holds TCP 443, with the
-# command that frees it for Pi-hole's own HTTPS listener.
-dataden_check_port() {
-  local owner cfg
-  owner="$(port_owner 443)" || return 0
-  [[ "$owner" != caddy ]] || return 0
-  if [[ "$owner" == pihole-FTL ]]; then
-    cfg="$(pihole_ftl --config webserver.port 2>/dev/null)" || cfg="$PH_DEFAULT_PORTS"
-    local cmd="sudo pihole-FTL"
-    task_in_container pihole && cmd="sudo docker exec pihole pihole-FTL"
-    die "Pi-hole's admin page holds port 443 for HTTPS, which the gateway needs. Keep it on plain HTTP with: $cmd --config webserver.port '$(dataden_pihole_without_tls "$cfg")', then run this task again"
+# Move Pi-hole's admin page off 443: drop the HTTPS entries of its
+# webserver.port, where Pi-hole takes it from (FTLCONF_webserver_port in
+# its compose file, or its own setting), and restart it.
+dataden_pihole_off_443() {
+  local dir cur new
+  info "Pi-hole's admin page holds port 443 for HTTPS; keeping it on plain HTTP so the gateway gets 443"
+  if task_in_container pihole; then
+    dir="$(container_dir pihole)"
+    cur="$(sed -nE 's/^[[:space:]]*FTLCONF_webserver_port:[[:space:]]*"?([^"]*)"?.*/\1/p' "$dir/docker-compose.yml" | head -n1)" || cur=""
+    new="$(pihole_without_tls "${cur:-$PH_DEFAULT_PORTS}")"
+    if [[ -n "$cur" ]]; then
+      sed -Ei "s/^([[:space:]]*FTLCONF_webserver_port:[[:space:]]*).*/\\1\"${new}\"/" "$dir/docker-compose.yml" ||
+        die "Could not change Pi-hole's ports in $dir/docker-compose.yml"
+      docker compose -f "$dir/docker-compose.yml" up -d >/dev/null || die 'Could not restart the Pi-hole container'
+    else
+      docker exec pihole pihole-FTL --config webserver.port "$new" >/dev/null ||
+        die "Could not change Pi-hole's ports in its container"
+      docker restart pihole >/dev/null || die 'Could not restart the Pi-hole container'
+    fi
+  else
+    cur="$(pihole-FTL --config webserver.port 2>/dev/null)" || cur="$PH_DEFAULT_PORTS"
+    new="$(pihole_without_tls "$cur")"
+    pihole-FTL --config webserver.port "$new" >/dev/null || die "Could not set Pi-hole's web admin ports to '$new'"
+    systemctl restart pihole-FTL || die 'Could not restart pihole-FTL'
   fi
-  die "Port 443 is used by '$owner'; the DATA-DEN gateway needs it. Stop that program, then run this task again"
+  for _ in $(seq 1 30); do
+    [[ "$(port_owner 443 || true)" == pihole-FTL ]] || break
+    sleep 1
+  done
+  [[ "$(port_owner 443 || true)" != pihole-FTL ]] || die 'Pi-hole still holds port 443 after the change; see: sudo pihole-FTL --config webserver.port'
+  say "Pi-hole's admin page now uses only plain HTTP ($new); port 443 is free for the gateway"
 }

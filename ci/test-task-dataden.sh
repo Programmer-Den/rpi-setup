@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # test-task-dataden.sh - unit tests for tasks/dataden.sh: the settings it
 # checks before anything changes, the Caddyfile and compose file it writes,
-# the pinning of the storage VM's certificate and the Pi-hole port hint.
+# the pinning of the storage VM's certificate and freeing 443 from Pi-hole.
 #
 # Run: bash ci/test-task-dataden.sh
 set -euo pipefail
@@ -29,10 +29,13 @@ for bad in '' abc "${hex}00" "${hex:2}" "zz${hex:2}"; do
   assert_fails "fingerprint: '$bad' refused" dataden_fingerprint_norm "$bad"
 done
 
-# --- dataden_pihole_without_tls -----------------------------------------------------
-assert_eq "pihole: HTTPS entries dropped" "80o,[::]:80o" "$(dataden_pihole_without_tls "$PH_DEFAULT_PORTS")"
-assert_eq "pihole: moved HTTP port kept" "8080o,[::]:8080o" "$(dataden_pihole_without_tls '8080o,443os,[::]:8080o,[::]:443os')"
-assert_eq "pihole: no HTTPS entry, unchanged" "80,8080r" "$(dataden_pihole_without_tls '80,8080r')"
+# --- pihole_without_tls / pihole_default_ports (lib/common.sh) ----------------------
+assert_eq "pihole: HTTPS entries dropped" "80o,[::]:80o" "$(pihole_without_tls "$PH_DEFAULT_PORTS")"
+assert_eq "pihole: moved HTTP port kept" "8080o,[::]:8080o" "$(pihole_without_tls '8080o,443os,[::]:8080o,[::]:443os')"
+assert_eq "pihole: no HTTPS entry, unchanged" "80,8080r" "$(pihole_without_tls '80,8080r')"
+assert_eq "pihole: defaults without the gateway keep HTTPS" "$PH_DEFAULT_PORTS" "$(RPI_SETUP_CONTAINER_ROOT="$TMP/none" pihole_default_ports)"
+mkdir -p "$TMP/opt/dataden" && touch "$TMP/opt/dataden/docker-compose.yml"
+assert_eq "pihole: defaults with the gateway leave 443 to it" "80o,[::]:80o" "$(RPI_SETUP_CONTAINER_ROOT="$TMP/opt" pihole_default_ports)"
 
 # --- dataden_caddyfile / dataden_compose --------------------------------------------
 cf="$(dataden_caddyfile nas.example.org 192.168.1.30 8443 me@example.org)"
@@ -41,6 +44,7 @@ assert_contains "caddyfile: no admin API" $'\tadmin off' "$cf"
 assert_contains "caddyfile: no redirect from port 80" $'\tauto_https disable_redirects' "$cf"
 assert_contains "caddyfile: Let's Encrypt over 443 only" 'disable_http_challenge' "$cf"
 assert_contains "caddyfile: email" $'\temail me@example.org' "$cf"
+assert_contains "caddyfile: no HTTP/3, as UDP 443 is not open" $'\t\tprotocols h1 h2' "$cf"
 assert_contains "caddyfile: forwards to the VM over HTTPS" 'reverse_proxy https://192.168.1.30:8443 {' "$cf"
 assert_contains "caddyfile: trusts only the pinned certificate" 'tls_trust_pool file /etc/caddy/vm-cert.pem' "$cf"
 assert_contains "caddyfile: the name in the VM's certificate" 'tls_server_name data-den' "$cf"
@@ -91,15 +95,34 @@ port_owner() { echo nginx; }
 run_with DATADEN_DOMAIN=nas.example.org DATADEN_VM=192.168.1.30
 assert_contains "a taken port 443 stops the task" "Port 443 is used by 'nginx'" "$(cat "$TMP/err")"
 assert_ok "a taken port: Docker was not touched" test ! -e "$TMP/reached"
-port_owner() { echo pihole-FTL; }
-pihole_ftl() { echo '8080o,443os,[::]:8080o,[::]:443os'; }
+port_owner() { echo caddy; }
 task_in_container() { return 1; }
 run_with DATADEN_DOMAIN=nas.example.org DATADEN_VM=192.168.1.30
-assert_contains "Pi-hole on 443: the command that frees it" \
-  "sudo pihole-FTL --config webserver.port '8080o,[::]:8080o'" "$(cat "$TMP/err")"
-port_owner() { echo caddy; }
+assert_contains "another Caddy on 443 stops the task" "Port 443 is used by 'caddy'" "$(cat "$TMP/err")"
+task_in_container() { [[ "$1" == dataden ]]; }
 run_with DATADEN_DOMAIN=nas.example.org DATADEN_VM=192.168.1.30
 assert_ok "the gateway's own Caddy on 443 is fine" test -e "$TMP/reached"
+
+# Pi-hole on 443 is moved to plain HTTP, on the host and in its container.
+echo 443 >"$TMP/held"
+port_owner() { [[ "$(cat "$TMP/held")" == "$1" ]] && echo pihole-FTL; }
+pihole-FTL() { if [[ $# -eq 2 ]]; then echo '8080o,443os,[::]:8080o,[::]:443os'; else echo "$3" >"$TMP/set"; fi; }
+systemctl() { echo none >"$TMP/held"; }
+task_in_container() { return 1; }
+run_with DATADEN_DOMAIN=nas.example.org DATADEN_VM=192.168.1.30
+assert_eq "Pi-hole on the host keeps plain HTTP" "8080o,[::]:8080o" "$(cat "$TMP/set" 2>/dev/null)"
+assert_ok "and the task goes on" test -e "$TMP/reached"
+echo 443 >"$TMP/held"
+RPI_SETUP_CONTAINER_ROOT="$TMP/opt"
+mkdir -p "$TMP/opt/pihole"
+printf 'services:\n  pihole:\n    environment:\n      FTLCONF_webserver_port: "80o,443os,[::]:80o,[::]:443os"\n' >"$TMP/opt/pihole/docker-compose.yml"
+docker() { echo none >"$TMP/held"; }
+task_in_container() { [[ "$1" == pihole ]]; }
+run_with DATADEN_DOMAIN=nas.example.org DATADEN_VM=192.168.1.30
+assert_contains "Pi-hole in Docker: its compose file keeps plain HTTP" 'FTLCONF_webserver_port: "80o,[::]:80o"' "$(cat "$TMP/opt/pihole/docker-compose.yml")"
+assert_ok "and the task goes on" test -e "$TMP/reached"
+unset RPI_SETUP_CONTAINER_ROOT
+unset -f pihole-FTL systemctl docker
 unset -f container_require_docker port_owner pihole_ftl task_in_container run_with
 
 # --- dataden_vm_cert ----------------------------------------------------------------

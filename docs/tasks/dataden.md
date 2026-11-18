@@ -73,8 +73,11 @@ shown and it is taken down again.
 - New certificate in the VM: put its fingerprint into
   `DATADEN_VM_FINGERPRINT` and run the task again. Without the setting, the
   pinned one stays until you delete `/opt/dataden/vm-cert.pem`.
-- Port 443 must be free. Pi-hole's admin page also listens there for HTTPS;
-  the task stops with the command that keeps it on plain HTTP.
+- Port 443 must be free. Pi-hole's admin page also listens there for HTTPS:
+  the task keeps it on plain HTTP (on the host or in its container), and the
+  `pihole` task leaves 443 alone from then on. Another program on 443 stops
+  the task.
+- Only HTTP/1.1 and HTTP/2: HTTP/3 would need UDP 443 open as well.
 - A newer Caddy comes with `sudo bash update.sh`; a changed setting with a
   re-run of the task.
 - `check.sh` reports the container, port 443 and whether DATA-DEN in the VM

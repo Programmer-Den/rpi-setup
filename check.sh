@@ -366,7 +366,11 @@ check_tasks() {
   if [[ -f "$(container_dir dataden)/docker-compose.yml" ]]; then
     found=1; check_config dataden
     if have docker; then check_container dataden; fi
-    check_listen "dataden: https" 443 tcp
+    if [[ "$(port_owner 443 || true)" == pihole-FTL ]]; then
+      report FAIL "dataden: https" "Pi-hole holds port 443, not the gateway; run: sudo bash setup.sh dataden"
+    else
+      check_listen "dataden: https" 443 tcp
+    fi
     check_dataden_vm
   fi
 

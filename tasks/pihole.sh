@@ -141,7 +141,7 @@ pihole_preseed() {
     echo "  queryLogging = $log"
     if [[ -n "$port" ]]; then
       echo '[webserver]'
-      echo "  port = \"$(pihole_port_setting "$PH_DEFAULT_PORTS" "$port")\""
+      echo "  port = \"$(pihole_port_setting "$(pihole_default_ports)" "$port")\""
     fi
     echo '[database]'
     echo "  DBinterval = $(pihole_db_interval)"
@@ -299,7 +299,7 @@ services:
       FTLCONF_dns_upstreams: "$ups"
       FTLCONF_dns_interface: "$iface"
       FTLCONF_dns_queryLogging: "$log"
-      FTLCONF_webserver_port: "$(pihole_port_setting "$PH_DEFAULT_PORTS" "$port")"
+      FTLCONF_webserver_port: "$(pihole_port_setting "$(pihole_default_ports)" "$port")"
       FTLCONF_database_DBinterval: "$interval"
 $([[ -z "$mode" ]] || printf '      FTLCONF_dns_listeningMode: "%s"\n' "$mode")
     volumes:
