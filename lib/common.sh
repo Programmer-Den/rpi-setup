@@ -232,6 +232,27 @@ pihole_web_ports() {
 # ("o" = optional, so a taken port does not stop FTL; "s" = TLS).
 PH_DEFAULT_PORTS='80o,443os,[::]:80o,[::]:443os'
 
+# Pi-hole's webserver.port list $1 without its HTTPS entries (flag "s"), so
+# its admin page keeps plain HTTP and leaves 443 to another program.
+pihole_without_tls() {
+  local e out=""
+  for e in ${1//,/ }; do
+    [[ "$e" =~ ^(.*:)?[0-9]+[A-Za-z]*$ && "${e##*[0-9]}" == *s* ]] && continue
+    out+="${out:+,}$e"
+  done
+  printf '%s\n' "$out"
+}
+
+# The webserver.port list Pi-hole starts from: PH_DEFAULT_PORTS, without the
+# HTTPS entries when the DATA-DEN gateway (the dataden task) has port 443.
+pihole_default_ports() {
+  if [[ -f "$(container_dir dataden)/docker-compose.yml" ]]; then
+    pihole_without_tls "$PH_DEFAULT_PORTS"
+  else
+    printf '%s\n' "$PH_DEFAULT_PORTS"
+  fi
+}
+
 # Pi-hole's webserver.port list $1 with every plain HTTP entry moved to
 # port $2; the TLS entries ("s" flag, the admin UI's HTTPS listener on 443)
 # keep their port. A list without an HTTP entry gets $2 for IPv4 and IPv6

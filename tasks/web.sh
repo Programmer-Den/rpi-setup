@@ -1420,13 +1420,13 @@ web_move_pihole() {
   if task_in_container pihole; then
     dir="$(container_dir pihole)"
     cur="$(sed -nE 's/^[[:space:]]*FTLCONF_webserver_port:[[:space:]]*"?([^"]*)"?.*/\1/p' "$dir/docker-compose.yml" | head -n1)" || cur=""
-    new="$(pihole_port_setting "${cur:-$PH_DEFAULT_PORTS}" "$to")"
+    new="$(pihole_port_setting "${cur:-$(pihole_default_ports)}" "$to")"
     sed -Ei "s/^([[:space:]]*FTLCONF_webserver_port:[[:space:]]*).*/\\1\"${new}\"/" "$dir/docker-compose.yml" ||
       web_move_fail "Could not change the port in $dir/docker-compose.yml"
     docker compose -f "$dir/docker-compose.yml" up -d >/dev/null || web_move_fail 'Could not restart the Pi-hole container'
   else
     cur="$(pihole-FTL --config webserver.port 2>/dev/null)" || cur=""
-    new="$(pihole_port_setting "${cur:-$PH_DEFAULT_PORTS}" "$to")"
+    new="$(pihole_port_setting "${cur:-$(pihole_default_ports)}" "$to")"
     pihole-FTL --config webserver.port "$new" >/dev/null ||
       web_move_fail "Could not set Pi-hole's web admin port to $to"
     systemctl restart pihole-FTL || web_move_fail 'Could not restart pihole-FTL'
