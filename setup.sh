@@ -32,10 +32,10 @@ task_desc_of() {
   die "unknown task: $1"
 }
 
-# Tasks the menu's "all" leaves out: apps and runner stop without their
+# Tasks the menu's "all" leaves out: apps, runner and dataden stop without their
 # required settings, and network changes the Pi's address (and ends an SSH
 # session). Pick them by number.
-NOT_IN_ALL=' apps runner network '
+NOT_IN_ALL=' apps runner dataden network '
 
 # Read the menu answer and print the names of the tasks picked by number.
 prompt_selection() {
@@ -251,7 +251,7 @@ main() {
     print_tasks
     echo
     echo 'Enter task numbers (comma/space separated), or nothing to quit.'
-    echo '"all" picks every task except apps, runner and network; firewall runs last:'
+    echo '"all" picks every task except apps, runner, dataden and network; firewall runs last:'
     picked=($(prompt_selection))
     if [[ ${#picked[@]} -eq 0 ]]; then
       echo 'Cancelled.'

@@ -8,7 +8,7 @@ set -euo pipefail
 TASKS+=("apps|Your own web apps from container images, each with a card on the start page")
 
 # Containers the other rpi-setup tasks run; an app cannot take their names.
-apps_reserved_names='pihole samba teamspeak teamspeak-usage netalertx web den-watcher'
+apps_reserved_names='pihole samba teamspeak teamspeak-usage netalertx web den-watcher dataden'
 
 # apps_parse LIST - check APPS_LIST and print one "name port container-port
 # image" line per app. LIST holds name:port=image entries, or

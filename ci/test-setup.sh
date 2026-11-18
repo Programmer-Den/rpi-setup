@@ -52,10 +52,10 @@ assert_contains "task_desc_of names the unknown task" "unknown task: no-such-tas
 nth() { task_name "${TASKS[$1 - 1]}"; }
 assert_eq "prompt_selection parses comma-separated numbers" "$(nth 1) $(nth 3)" "$(printf '1,3\n' | prompt_selection 2>/dev/null | xargs)"
 assert_eq "prompt_selection parses space-separated numbers" "$(nth 2) $(nth 4)" "$(printf '2 4\n' | prompt_selection 2>/dev/null | xargs)"
-# "all" leaves out the tasks that need settings (apps, runner) or change the
+# "all" leaves out the tasks that need settings (apps, runner, dataden) or change the
 # address (network); picked by number they still run.
-all_names="$(printf '%s\n' "${names[@]}" | grep -vxE 'apps|runner|network' | xargs)"
-assert_eq "prompt_selection expands 'all' without apps, runner and network" "$all_names" \
+all_names="$(printf '%s\n' "${names[@]}" | grep -vxE 'apps|runner|dataden|network' | xargs)"
+assert_eq "prompt_selection expands 'all' without apps, runner, dataden and network" "$all_names" \
     "$(printf 'all\n' | prompt_selection 2>/dev/null | xargs)"
 apps_no="$(printf '%s\n' "${names[@]}" | grep -nx apps | cut -d: -f1)"
 assert_eq "prompt_selection still picks apps by number" "apps" "$(printf '%s\n' "$apps_no" | prompt_selection 2>/dev/null | xargs)"
