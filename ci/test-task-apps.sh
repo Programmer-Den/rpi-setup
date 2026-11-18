@@ -30,7 +30,7 @@ done
 # Names that are not a string to YAML, too short for Docker, or another
 # task's container.
 for bad in a 1 123 1e3 1e-3 0x1f 0o17 0b101 true false yes no on off null pihole samba teamspeak \
-  teamspeak-usage netalertx web den-watcher den-watcher-containers den-watcher-wifi; do
+  teamspeak-usage netalertx web den-watcher den-watcher-containers den-watcher-wifi dataden; do
   assert_fails "list: name '$bad' refused" apps_parse "$bad:8091=you/game"
   ( apps_parse "$bad:8091=you/game" ) >/dev/null 2>"$TMP/err" || true
   assert_contains "list: name '$bad' named in the error" "'$bad" "$(cat "$TMP/err")"

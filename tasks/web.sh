@@ -909,7 +909,7 @@ web_links_run_known() {
   case "$1" in
     netalertx) printf 'NetAlertX\tWhich devices are on the network, and when\t/\n' ;;
     den-watcher) printf 'Den-Watcher\tCPU, memory, temperature and disks of this Pi, with their history\t/\n' ;;
-    pihole|web|teamspeak|teamspeak-usage|samba) printf -- '-\n' ;;
+    pihole|web|teamspeak|teamspeak-usage|samba|dataden) printf -- '-\n' ;;
     *) return 1 ;;
   esac
 }

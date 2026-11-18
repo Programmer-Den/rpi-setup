@@ -158,6 +158,22 @@ check_listen() {
   fi
 }
 
+# Report whether the DATA-DEN gateway reaches DATA-DEN in the storage VM,
+# over HTTPS with the certificate it pinned (DATADEN_VM, DATADEN_VM_PORT).
+check_dataden_vm() {
+  local label="dataden: storage VM" vm="${DATADEN_VM:-}" port cert
+  port="$(port_setting DATADEN_VM_PORT 8443)"
+  cert="$(container_dir dataden)/vm-cert.pem"
+  if [[ -z "$vm" ]]; then report WARN "$label" "DATADEN_VM is not set"; return 0; fi
+  if ! have curl; then report WARN "$label" "curl not found"; return 0; fi
+  if curl -sS -o /dev/null --connect-timeout 3 --max-time 8 --cacert "$cert" \
+    --connect-to "data-den:$port:$vm:$port" "https://data-den:$port/api/health" 2>/dev/null; then
+    report OK "$label" "DATA-DEN at $vm:$port answers, with the pinned certificate"
+  else
+    report FAIL "$label" "DATA-DEN at $vm:$port does not answer, or not with the pinned certificate $cert"
+  fi
+}
+
 # Report whether container $1 is running.
 check_container() {
   local name="$1" state
@@ -345,6 +361,13 @@ check_tasks() {
     found=1; check_config denwatcher
     if have docker; then check_container den-watcher; fi
     check_http "denwatcher: web" "http://$host:$(port_setting DENWATCHER_PORT 9393)/api/metrics"
+  fi
+
+  if [[ -f "$(container_dir dataden)/docker-compose.yml" ]]; then
+    found=1; check_config dataden
+    if have docker; then check_container dataden; fi
+    check_listen "dataden: https" 443 tcp
+    check_dataden_vm
   fi
 
   if [[ -f "$(container_dir apps)/docker-compose.yml" ]]; then
