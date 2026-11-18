@@ -22,7 +22,7 @@ do not want the installer to run.
 | `PIHOLE_INTERFACE` | the default route's | Interface Pi-hole answers on, e.g. `eth0` or `wlan0`. Install only. |
 | `PIHOLE_DNS` | `1.1.1.1,1.0.0.1` | Upstream DNS servers, comma separated: IPv4 or IPv6 addresses, each with an optional `#port` (e.g. `1.1.1.1#5353`). Install only. |
 | `PIHOLE_QUERY_LOGGING` | `yes` | Log DNS queries. Install only. |
-| `PIHOLE_WEB_PORT` | `80`, or `8080` if port 80 is taken | HTTP port of the web admin. Re-runs move it when you change it; Pi-hole's HTTPS listener on 443 stays as it is (none with the `dataden` gateway, which needs 443). The `web` task moves the admin page from 80 to this port (`8080` when empty), so set `80` only to keep the start page off port 80. |
+| `PIHOLE_WEB_PORT` | `80`, or `8080` if port 80 is taken | HTTP port of the web admin. Re-runs move it when you change it; Pi-hole's HTTPS listener on 443 stays as it is (none with the `gateway` task, which needs 443). The `web` task moves the admin page from 80 to this port (`8080` when empty), so set `80` only to keep the start page off port 80. |
 | `PIHOLE_LISTEN_ALL` | empty: leave as it is | `yes`: answer DNS queries from any network, e.g. your tailnet (only safe behind a firewall). `no`: only from local subnets. Applied on every run. |
 | `PIHOLE_DB_INTERVAL` | `300` | Seconds between Pi-hole's writes of new queries to its database, from 60 to 3600 (Pi-hole's own default is 60). Fewer writes spare the SD card; the web UI still shows the newest queries from memory, and a power cut loses at most this much of the query log. Applied on every run. |
 | `PIHOLE_DOCKER` | `no` | `yes` runs Pi-hole in its own Docker container instead of the installer ([below](#run-it-in-docker)). |
