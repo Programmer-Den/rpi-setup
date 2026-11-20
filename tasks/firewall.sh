@@ -393,9 +393,9 @@ firewall_service_ports() {
       printf '%s/tcp open denwatcher-status docker\n' "$DENWATCHER_STATUS_PORT"
     fi
   fi
-  # DATA-DEN's gateway is on the host's network and meant for the internet.
-  if [[ -f "$(container_dir dataden)/docker-compose.yml" ]]; then
-    printf '443/tcp open dataden\n'
+  # The gateway is on the host's network and meant for the internet.
+  if [[ -f "$(container_dir gateway)/docker-compose.yml" ]]; then
+    printf '443/tcp open gateway\n'
   fi
   # The apps task's ports, from its compose file (one per app).
   if [[ -f "$(container_dir apps)/docker-compose.yml" ]]; then

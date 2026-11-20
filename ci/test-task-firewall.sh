@@ -183,10 +183,10 @@ else
     "$(RPI_SETUP_CONTAINER_ROOT="$ctr" firewall_service_ports)"
   assert_contains "containers: Den-Watcher status page open to anyone" "9443/tcp open denwatcher-status docker" \
     "$(DENWATCHER_STATUS_PORT=9443 RPI_SETUP_CONTAINER_ROOT="$ctr" firewall_service_ports)"
-  assert_lacks "containers: no DATA-DEN gateway without its task" "dataden" \
+  assert_lacks "containers: no gateway without its task" "gateway" \
     "$(RPI_SETUP_CONTAINER_ROOT="$ctr" firewall_service_ports)"
-  install -d "$ctr/dataden"; touch "$ctr/dataden/docker-compose.yml"
-  assert_contains "containers: DATA-DEN gateway open to anyone on 443" "443/tcp open dataden" \
+  install -d "$ctr/gateway"; touch "$ctr/gateway/docker-compose.yml"
+  assert_contains "containers: gateway open to anyone on 443" "443/tcp open gateway" \
     "$(RPI_SETUP_CONTAINER_ROOT="$ctr" firewall_service_ports)"
   install -d "$ctr/apps"
   printf '    ports:\n      - "0.0.0.0:8096:8080"\n    ports:\n      - "0.0.0.0:8097:80"\n' >"$ctr/apps/docker-compose.yml"

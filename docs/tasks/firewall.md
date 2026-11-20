@@ -41,7 +41,7 @@ only when Tailscale is installed (by hand).
 | Den-Watcher | `DENWATCHER_PORT` | `FIREWALL_ALLOW_FROM` (published by Docker) |
 | Den-Watcher status page | `DENWATCHER_STATUS_PORT` | anyone (published by Docker; it is meant for outside) |
 | apps | each app's port | `FIREWALL_ALLOW_FROM` (published by Docker) |
-| DATA-DEN gateway (`dataden`) | 443/tcp | anyone (it is meant for outside) |
+| HTTPS gateway (`gateway`) | 443/tcp | anyone (it is meant for outside) |
 | Tailscale (installed by hand) | 41641/udp | anyone |
 
 "Published by Docker" means the container publishes the port itself

@@ -70,7 +70,7 @@ how to reach it and what to watch out for.
 | [`teamspeak`](docs/tasks/teamspeak.md) | TeamSpeak 6 server, voice `:9987`, file `:30033`, web query `:10080`, who is online and when on the start page (needs `docker`, 64-bit OS) | `TEAMSPEAK_QUERY_ADMIN_PASSWORD` |
 | [`denwatcher`](docs/tasks/denwatcher.md) | Den-Watcher website with the Pi's CPU, memory and temperatures on `http://<pi>:9393` (needs `docker`, 64-bit OS) | `DENWATCHER_PORT` |
 | [`apps`](docs/tasks/apps.md) | Your own web apps from container images, such as a game your CI builds, each on its own port with a card on the start page (needs `docker`, 64-bit OS) | `APPS_LIST`, `APPS_DATA` |
-| [`dataden`](docs/tasks/dataden.md) | HTTPS gateway of [DATA-DEN](https://github.com/Programmer-Den/DATA-DEN), the NAS in a storage VM: `https://<your domain>` on port 443 with a Let's Encrypt certificate, forwarded encrypted to the VM (needs `docker`) | `DATADEN_DOMAIN`, `DATADEN_VM` |
+| [`gateway`](docs/tasks/gateway.md) | HTTPS gateway from the internet to one of your apps in the LAN: `https://<your domain>` on port 443 with a Let's Encrypt certificate, forwarded encrypted to the app (needs `docker`) | `GATEWAY_DOMAIN`, `GATEWAY_UPSTREAM` |
 | [`runner`](docs/tasks/runner.md) | GitHub runner for a manual *Deploy to Pi* button in your private settings repository ([template](templates/private-repo/README.md)) | `RUNNER_REPO`, `RUNNER_TOKEN` (once) |
 | [`firewall`](docs/tasks/firewall.md) | nftables firewall: SSH and the installed services' ports open, the rest dropped (run it last, re-run after adding a task) | `FIREWALL_ALLOW_FROM`, `FIREWALL_EXTRA_PORTS` |
 
@@ -84,9 +84,9 @@ How a run works:
 
 - `base` runs first and `firewall` last when you pick them; the others run
   in the order given. In the menu, `all` picks every task except `apps`,
-  `runner` and `dataden` (they need settings) and `network` (it changes the Pi's
+  `runner` and `gateway` (they need settings) and `network` (it changes the Pi's
   address); pick those by number.
-  `netalertx`, `teamspeak`, `denwatcher`, `apps` and `dataden` need Docker; they run the `docker` task
+  `netalertx`, `teamspeak`, `denwatcher`, `apps` and `gateway` need Docker; they run the `docker` task
   themselves when Docker is not installed.
 - A failed task does not stop the others, and `setup.sh` then exits non-zero.
 - The run ends with a summary (`ok`, `failed` or `skipped` per task) and a
@@ -163,7 +163,7 @@ instead of installing it with apt. Set it to `yes` and run the task again:
 Tasks that can do this: [`web`](docs/tasks/web.md#run-it-in-docker),
 [`pihole`](docs/tasks/pihole.md#run-it-in-docker) and
 [`samba`](docs/tasks/samba.md#run-it-in-docker).
-`netalertx`, `teamspeak`, `denwatcher`, `apps` and `dataden` always run in Docker; `base`, `docker`, `network`,
+`netalertx`, `teamspeak`, `denwatcher`, `apps` and `gateway` always run in Docker; `base`, `docker`, `network`,
 `backup` and `firewall` always run natively. The `firewall`, `backup` and
 `check.sh` recognise a task running in its container.
 

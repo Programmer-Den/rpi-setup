@@ -244,9 +244,9 @@ pihole_without_tls() {
 }
 
 # The webserver.port list Pi-hole starts from: PH_DEFAULT_PORTS, without the
-# HTTPS entries when the DATA-DEN gateway (the dataden task) has port 443.
+# HTTPS entries when the gateway task has port 443.
 pihole_default_ports() {
-  if [[ -f "$(container_dir dataden)/docker-compose.yml" ]]; then
+  if [[ -f "$(container_dir gateway)/docker-compose.yml" ]]; then
     pihole_without_tls "$PH_DEFAULT_PORTS"
   else
     printf '%s\n' "$PH_DEFAULT_PORTS"
