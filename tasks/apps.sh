@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Task: apps - your own web apps from container images (Docker), such as a
-# static site or a game built by your repository's CI.
+# static site or a game built by your repository's CI, or built on the Pi
+# from a git repository (APPS_BUILD).
 # Settings: APPS_* in config/rpi-setup.env (names in config/tasks/apps.env).
 set -euo pipefail
 . "$RPI_SETUP_ROOT/lib/containers.sh"
@@ -63,24 +64,98 @@ apps_data_parse() {
   done
 }
 
-# apps_compose UID [DATA] < "name port container-port image" lines - the
-# compose file: one container per app, named after it, published on its port,
-# with labels that give it a card on the web task's start page. Every app runs
-# as UID (not root), with no capabilities, a read-only file system and only
-# /tmp writable (in memory), so it keeps nothing between restarts; an app
+# apps_build_parse BUILD NAMES - check APPS_BUILD against the app names in
+# NAMES (space separated) and print one "name url ref" line per app to build
+# on the Pi. BUILD holds name=url#ref entries, separated by spaces or commas:
+# url is a git repository over https, ref a branch, tag or commit (7 to 40
+# hex digits); without #ref the repository's default branch (ref HEAD).
+apps_build_parse() {
+  local entry name url ref seen=" "
+  local re='^([a-z0-9][a-z0-9-]*)=(https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9._~/-]+)(#(.+))?$'
+  for entry in ${1//,/ }; do
+    [[ "$entry" =~ $re ]] ||
+      die "APPS_BUILD entries must look like name=https://host/repo.git#ref, such as game=https://github.com/you/game.git#main (got '$entry')"
+    name="${BASH_REMATCH[1]}" url="${BASH_REMATCH[2]}" ref="${BASH_REMATCH[5]:-HEAD}"
+    # A ref git takes as a name of its own: no option, no "..", no "@{".
+    [[ "$ref" =~ ^[A-Za-z0-9_][A-Za-z0-9_./-]*$ && "$ref" != *..* && "$ref" != *.lock && "$ref" != */ ]] ||
+      die "APPS_BUILD: '$ref' of '$name' is not a branch, tag or commit"
+    [[ "$url" != *..* ]] || die "APPS_BUILD: the address of '$name' must not contain '..' (got '$url')"
+    [[ " $2 " == *" $name "* ]] ||
+      die "APPS_BUILD: '$name' is not an app in APPS_LIST; list the app there with its port, and any image"
+    [[ "$seen" != *" $name "* ]] || die "APPS_BUILD names '$name' twice"
+    seen+="$name "
+    printf '%s %s %s\n' "$name" "$url" "$ref"
+  done
+}
+
+# apps_git DIR TOKEN ARGS... - git in DIR, never waiting for a password. A
+# TOKEN goes to the server as an HTTP header from the environment, so it is
+# never written to the repository's config or shown in the process list.
+apps_git() {
+  local dir="$1" token="$2"
+  shift 2
+  if [[ -n "$token" ]]; then
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
+      GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'x-access-token:%s' "$token" | base64 -w0)" \
+      GIT_TERMINAL_PROMPT=0 git -C "$dir" "$@"
+  else
+    GIT_TERMINAL_PROMPT=0 git -C "$dir" "$@"
+  fi
+}
+
+# apps_checkout DIR URL REF [TOKEN] - fetch the repository URL into DIR (a
+# git checkout of its own, made when missing or when it holds another
+# repository) and check out REF, with nothing else in the folder; prints the
+# commit. Only the history is fetched in full, file contents only for the
+# commit checked out. REF is looked up as a branch, then a tag, then a commit.
+apps_checkout() {
+  local dir="$1" url="$2" ref="$3" token="${4:-}" sha
+  if [[ "$(git -C "$dir" config --get remote.origin.url 2>/dev/null)" != "$url" ]]; then
+    rm -rf "$dir"
+    install -m 0700 -d "$dir"
+    git -C "$dir" init -q
+    git -C "$dir" remote add origin "$url"
+    git -C "$dir" config remote.origin.promisor true
+    git -C "$dir" config remote.origin.partialclonefilter blob:none
+  fi
+  apps_git "$dir" "$token" fetch --quiet --prune --force --filter=blob:none origin \
+    '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*' '+HEAD:refs/remotes/origin/HEAD' ||
+    die "Could not fetch $url; check the address, the network and, for a private repository, APPS_BUILD_TOKEN"
+  sha="$(git -C "$dir" rev-parse --verify --quiet "refs/remotes/origin/$ref^{commit}" ||
+    git -C "$dir" rev-parse --verify --quiet "refs/tags/$ref^{commit}" ||
+    { [[ "$ref" =~ ^[0-9a-f]{7,40}$ ]] && git -C "$dir" rev-parse --verify --quiet "$ref^{commit}"; })" ||
+    die "'$ref' is no branch, tag or commit of $url"
+  apps_git "$dir" "$token" -c advice.detachedHead=false checkout --quiet --force --detach "$sha" ||
+    die "Could not check out ${sha:0:7} of $url"
+  git -C "$dir" clean -qffdx
+  printf '%s\n' "$sha"
+}
+
+# apps_compose UID [DATA] [BUILT] < "name port container-port image" lines -
+# the compose file: one container per app, named after it, published on its
+# port, with labels that give it a card on the web task's start page. Every app
+# runs as UID (not root), with no capabilities, a read-only file system and
+# only /tmp writable (in memory), so it keeps nothing between restarts; an app
 # named in DATA (space separated) also gets its folder under DIR/data as /data.
+# An app named in BUILT (space separated) is built on the Pi from its checkout
+# DIR/build/<name>; its "image" is then the source shown on its card.
 apps_compose() {
-  local uid="$1" data=" ${2:-} " name port cport image
+  local uid="$1" data=" ${2:-} " built=" ${3:-} " name port cport image from
   echo 'services:'
   while read -r name port cport image; do
+    if [[ "$built" == *" $name "* ]]; then
+      from="App built from $image"
+      printf '  %s:\n    build:\n      context: "./build/%s"\n' "$name" "$name"
+    else
+      from="App from $image"
+      printf '  %s:\n    image: "%s"\n' "$name" "$image"
+    fi
     cat <<EOF2
-  $name:
-    image: "$image"
     container_name: $name
     restart: unless-stopped
     labels:
       rpi-setup.link.name: "$name"
-      rpi-setup.link.description: "App from $image"
+      rpi-setup.link.description: "$from"
       rpi-setup.link.port: "$port"
     ports:
       - "0.0.0.0:$port:$cport"
@@ -145,6 +220,14 @@ run_apps() {
     fi
   done <<<"$apps"
 
+  local builds token=""
+  builds="$(apps_build_parse "${APPS_BUILD:-}" "$names")"
+  if [[ -n "${APPS_BUILD_TOKEN:-}" ]]; then
+    [[ "$APPS_BUILD_TOKEN" =~ ^[A-Za-z0-9_]+$ ]] ||
+      die 'APPS_BUILD_TOKEN has characters a GitHub token does not have'
+    token="$APPS_BUILD_TOKEN"
+  fi
+
   container_require_64bit APPS_LIST
   container_require_docker
 
@@ -157,12 +240,49 @@ run_apps() {
   for name in $data; do
     install -m 0700 -o "$uid" -g "$uid" -d "$dir/data/$name"
   done
-  apps_compose "$uid" "${data//$'\n'/ }" <<<"$apps" | write_if_changed "$dir/docker-compose.yml" 0644 || true
 
-  # Pulling every run brings a moving tag such as :latest up to date; "up"
-  # then recreates only the apps whose image or settings changed, and
-  # --remove-orphans takes down the ones no longer listed.
+  # Apps built on the Pi: each repository is checked out in DIR/build/<name>
+  # (root only; it is the build's context) and its card names the commit.
+  # Checkouts of apps no longer in APPS_BUILD are removed.
+  local built="" url ref sha
+  if [[ -n "$builds" ]]; then
+    if [[ -n "$token" ]]; then
+      save_secret apps APPS_BUILD_TOKEN "$token"
+    else
+      token="$(load_secret apps APPS_BUILD_TOKEN)" || token=""
+    fi
+    have git || apt_install git
+    install -m 0700 -d "$dir/build"
+    while read -r name url ref; do
+      info "Fetching $name from $url ($ref)"
+      sha="$(apps_checkout "$dir/build/$name" "$url" "$ref" "$token")"
+      say "$name: ${sha:0:7} of $url"
+      built+="$name "
+      apps="$(awk -v n="$name" -v src="$url@${sha:0:7}" '$1 == n { $4 = src } { print }' <<<"$apps")"
+    done <<<"$builds"
+  fi
+  if [[ -d "$dir/build" ]]; then
+    for sha in "$dir"/build/*/; do
+      [[ -d "$sha" && " $built " != *" $(basename "$sha") "* ]] || continue
+      rm -rf "$sha"
+      info "Removed the checkout of $(basename "$sha"), which is no longer in APPS_BUILD"
+    done
+  fi
+
+  apps_compose "$uid" "${data//$'\n'/ }" "$built" <<<"$apps" | write_if_changed "$dir/docker-compose.yml" 0644 || true
+
+  # Pulling every run brings a moving tag such as :latest up to date (the
+  # apps built here are skipped); "up" then recreates only the apps whose
+  # image or settings changed, and --remove-orphans takes down the ones no
+  # longer listed. The apps built here are built again first, with their
+  # base images pulled; an unchanged checkout comes from the build cache.
   container_pull "$dir"
+  if [[ -n "$built" ]]; then
+    info "Building $built"
+    # shellcheck disable=SC2086 # one word per app
+    docker compose -f "$dir/docker-compose.yml" build --pull $built ||
+      die "Could not build $built; see the build output above"
+  fi
   container_up "$dir" "$(head -n1 <<<"$apps" | cut -d' ' -f1)"
   while read -r name port cport image; do
     container_wait_stable "$name" ||

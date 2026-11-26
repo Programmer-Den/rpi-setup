@@ -46,6 +46,57 @@ assert_fails "data: an app not in APPS_LIST refused" apps_data_parse 'other' ' g
 ( apps_data_parse 'other' ' game ' ) >/dev/null 2>"$TMP/err" || true
 assert_contains "data: the unknown app named in the error" "APPS_DATA: 'other'" "$(cat "$TMP/err")"
 
+# --- APPS_BUILD -------------------------------------------------------------------
+assert_eq "build: name, address and ref" "game https://github.com/you/game.git main" \
+  "$(apps_build_parse 'game=https://github.com/you/game.git#main' ' game ')"
+assert_eq "build: without a ref the default branch, commas and commits" \
+  $'game https://example.org:8443/you/game HEAD\nsite https://github.com/you/site.git 1a2b3c4' \
+  "$(apps_build_parse 'game=https://example.org:8443/you/game, site=https://github.com/you/site.git#1a2b3c4' ' game site ')"
+assert_eq "build: a branch with a slash" "game https://github.com/you/game.git feature/x" \
+  "$(apps_build_parse 'game=https://github.com/you/game.git#feature/x' ' game ')"
+assert_eq "build: empty" "" "$(apps_build_parse '' ' game ')"
+for bad in 'game' 'game=' 'game=http://github.com/you/game.git' 'game=git@github.com:you/game.git' \
+  'game=https://github.com/you/game.git#-x' 'game=https://github.com/you/game.git#a..b' \
+  'game=https://github.com/you/game.git#a@{1}' 'game=https://github.com/../game.git' \
+  'game=https://user:pw@github.com/you/game.git' 'game=https://github.com/you/game.git#'; do
+  assert_fails "build: '$bad' refused" apps_build_parse "$bad" ' game '
+  ( apps_build_parse "$bad" ' game ' ) >/dev/null 2>"$TMP/err" || true
+  assert_contains "build: '$bad' named in the error" "APPS_BUILD" "$(cat "$TMP/err")"
+done
+assert_fails "build: an app not in APPS_LIST refused" apps_build_parse 'other=https://github.com/you/o.git' ' game '
+assert_fails "build: an app twice refused" apps_build_parse 'game=https://a.b/c game=https://a.b/d' ' game '
+
+# A repository to build from: a branch, a tag and an older commit.
+repo="$TMP/repo.git"
+git init -q -b main "$TMP/work"
+git -C "$TMP/work" -c user.name=t -c user.email=t@t commit -q --allow-empty -m one
+first="$(git -C "$TMP/work" rev-parse HEAD)"
+echo two >"$TMP/work/file"
+git -C "$TMP/work" add file
+git -C "$TMP/work" -c user.name=t -c user.email=t@t commit -q -m two
+git -C "$TMP/work" tag v1
+git -C "$TMP/work" checkout -q -b feature/x
+echo x >"$TMP/work/file"
+git -C "$TMP/work" -c user.name=t -c user.email=t@t commit -q -am x
+git clone -q --bare "$TMP/work" "$repo"
+git -C "$repo" config uploadpack.allowFilter true
+git -C "$repo" symbolic-ref HEAD refs/heads/main
+co="$TMP/checkout"
+assert_eq "checkout: a branch" "$(git -C "$repo" rev-parse main)" "$(apps_checkout "$co" "file://$repo" main)"
+assert_eq "checkout: its files" "two" "$(cat "$co/file")"
+assert_eq "checkout: the default branch" "$(git -C "$repo" rev-parse main)" "$(apps_checkout "$co" "file://$repo" HEAD)"
+assert_eq "checkout: a branch with a slash" "$(git -C "$repo" rev-parse feature/x)" "$(apps_checkout "$co" "file://$repo" feature/x)"
+assert_eq "checkout: a tag" "$(git -C "$repo" rev-parse main)" "$(apps_checkout "$co" "file://$repo" v1)"
+echo junk >"$co/junk"
+assert_eq "checkout: a short commit" "$first" "$(apps_checkout "$co" "file://$repo" "${first:0:7}")"
+assert_ok "checkout: nothing else left in the folder" test ! -e "$co/junk" -a ! -e "$co/file"
+assert_fails "checkout: an unknown ref stops the task" apps_checkout "$co" "file://$repo" nope
+( apps_checkout "$co" "file://$repo" nope ) >/dev/null 2>"$TMP/err" || true
+assert_contains "checkout: the unknown ref named" "'nope' is no branch, tag or commit" "$(cat "$TMP/err")"
+assert_fails "checkout: a missing repository stops the task" apps_checkout "$co" "file://$TMP/none.git" main
+assert_eq "checkout: a token never lands in the checkout" "" \
+  "$(apps_checkout "$co" "file://$repo" main secret123 >/dev/null; grep -r secret123 "$co/.git" || true)"
+
 # --- the compose file -----------------------------------------------------------
 out="$(apps_parse 'game:8091=ghcr.io/you/game:latest site:8092:80=you/site' | apps_compose 1234)"
 assert_contains "compose: image" 'image: "ghcr.io/you/game:latest"' "$out"
@@ -67,6 +118,20 @@ assert_contains "compose: data folder as /data" '"./data/site:/data"' "$(sed -n 
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   printf '%s\n' "$out" >"$TMP/docker-compose.yml"
   assert_ok "compose: docker compose accepts it" docker compose -f "$TMP/docker-compose.yml" config -q
+else
+  skip "compose: docker compose not installed"
+fi
+
+out="$(printf '%s\n' 'game 8091 8080 https://github.com/you/game.git@1a2b3c4' 'site 8092 8080 you/site' | apps_compose 1234 '' 'game')"
+game="$(sed -n '/^  game:/,/^  site:/p' <<<"$out")"
+assert_contains "compose: a built app has its checkout as build context" 'context: "./build/game"' "$game"
+assert_eq "compose: a built app has no image to pull" 0 "$(grep -c 'image:' <<<"$game")"
+assert_contains "compose: a built app's card names the source" 'App built from https://github.com/you/game.git@1a2b3c4' "$game"
+assert_contains "compose: the other app keeps its image" 'image: "you/site"' "$out"
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+  printf '%s\n' "$out" >"$TMP/docker-compose.yml"
+  mkdir -p "$TMP/build/game"
+  assert_ok "compose: docker compose accepts a built app" docker compose -f "$TMP/docker-compose.yml" config -q
 else
   skip "compose: docker compose not installed"
 fi
@@ -150,5 +215,35 @@ assert_contains "run: compose file mounts it" '"./data/site:/data"' "$(cat "$com
 ( APPS_LIST=''; run_apps ) >/dev/null 2>&1
 assert_contains "run: an emptied list takes the apps down" "down --remove-orphans" "$(cat "$TMP/calls")"
 assert_ok "run: and puts the compose file aside" test ! -e "$compose" -a -e "$compose.disabled"
+
+( APPS_LIST='game:8091=you/game'; APPS_BUILD='game=https://github.com/you/game.git#main'; APPS_BUILD_TOKEN='bad token'
+  run_apps ) >/dev/null 2>"$TMP/err" || true
+assert_contains "run: a bad APPS_BUILD_TOKEN stops the task" "APPS_BUILD_TOKEN has characters" "$(cat "$TMP/err")"
+( APPS_LIST='game:8091=you/game'; APPS_BUILD='other=https://github.com/you/o.git'; run_apps ) >/dev/null 2>"$TMP/err" || true
+assert_contains "run: APPS_BUILD naming an app not in APPS_LIST stops the task" "APPS_BUILD: 'other'" "$(cat "$TMP/err")"
+: >"$TMP/calls"
+apps_checkout() { echo "checkout $*" >>"$TMP/calls"; mkdir -p "$1"; echo 1a2b3c4d5e6f1a2b3c4d5e6f1a2b3c4d5e6f1a2b; }
+save_secret() { echo "save $*" >>"$TMP/calls"; }
+load_secret() { echo saved-token; }
+mkdir -p "$TMP/opt/apps/build/gone"
+( APPS_LIST='game:8091=you/game,site:8092=you/site'; APPS_BUILD='game=https://github.com/you/game.git#main'
+  APPS_BUILD_TOKEN=tok_1; run_apps ) >/dev/null 2>&1
+assert_contains "run: the token is saved" "save apps APPS_BUILD_TOKEN tok_1" "$(cat "$TMP/calls")"
+assert_contains "run: the repository is checked out with it" \
+  "checkout $TMP/opt/apps/build/game https://github.com/you/game.git main tok_1" "$(cat "$TMP/calls")"
+assert_contains "run: the built app is built" "docker compose -f $compose build --pull game" "$(cat "$TMP/calls")"
+assert_contains "run: its card names the commit" "App built from https://github.com/you/game.git@1a2b3c4" "$(cat "$compose")"
+assert_ok "run: a checkout no longer in APPS_BUILD is removed" test ! -e "$TMP/opt/apps/build/gone"
+assert_ok "run: the built app's checkout stays" test -d "$TMP/opt/apps/build/game"
+: >"$TMP/calls"
+( APPS_LIST='game:8091=you/game'; APPS_BUILD='game=https://github.com/you/game.git'; run_apps ) >/dev/null 2>&1
+assert_contains "run: without a token the saved one is used" \
+  "checkout $TMP/opt/apps/build/game https://github.com/you/game.git HEAD saved-token" "$(cat "$TMP/calls")"
+assert_eq "run: and not saved again" 0 "$(grep -c '^save' "$TMP/calls")"
+: >"$TMP/calls"
+( APPS_LIST='game:8091=you/game'; run_apps ) >/dev/null 2>&1
+assert_ok "run: out of APPS_BUILD, its checkout is removed" test ! -e "$TMP/opt/apps/build/game"
+assert_eq "run: and nothing is built" 0 "$(grep -c ' build ' "$TMP/calls")"
+assert_contains "run: the app runs its image again" 'image: "you/game"' "$(cat "$compose")"
 
 finish_tests
