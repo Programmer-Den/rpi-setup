@@ -131,6 +131,29 @@ apps_checkout() {
   printf '%s\n' "$sha"
 }
 
+# apps_prebuilt IMAGE DIR SHA - a published image of commit SHA (checked out
+# in DIR) in IMAGE's repository, pulled and printed: IMAGE's repository with
+# the tag sha-<first 7 digits>, as a CI publishes a commit, or with a release
+# tag of the commit (its git tag without a leading v, such as 1.2.3 for
+# v1.2.3). False when the registry has none of them.
+apps_prebuilt() {
+  local image="$1" dir="$2" sha="$3" repo tag
+  repo="${image%@*}"
+  [[ "${repo##*/}" != *:* ]] || repo="${repo%:*}"
+  local -a tags=("sha-${sha:0:7}")
+  while read -r tag; do
+    tag="${tag#v}"
+    [[ "$tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] && tags+=("$tag")
+  done < <(git -C "$dir" tag --points-at "$sha" 2>/dev/null)
+  for tag in "${tags[@]}"; do
+    if docker pull -q "$repo:$tag" >/dev/null 2>&1; then
+      printf '%s\n' "$repo:$tag"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # apps_compose UID [DATA] [BUILT] < "name port container-port image" lines -
 # the compose file: one container per app, named after it, published on its
 # port, with labels that give it a card on the web task's start page. Every app
@@ -241,10 +264,12 @@ run_apps() {
     install -m 0700 -o "$uid" -g "$uid" -d "$dir/data/$name"
   done
 
-  # Apps built on the Pi: each repository is checked out in DIR/build/<name>
-  # (root only; it is the build's context) and its card names the commit.
+  # Apps from git: each repository is checked out in DIR/build/<name> (root
+  # only). When the registry of the app's image in APPS_LIST already has an
+  # image of that commit, the app runs it; otherwise the checkout is the
+  # build's context and the app is built here, its card naming the commit.
   # Checkouts of apps no longer in APPS_BUILD are removed.
-  local built="" url ref sha
+  local built="" fetched="" url ref sha prebuilt
   if [[ -n "$builds" ]]; then
     if [[ -n "$token" ]]; then
       save_secret apps APPS_BUILD_TOKEN "$token"
@@ -256,14 +281,21 @@ run_apps() {
     while read -r name url ref; do
       info "Fetching $name from $url ($ref)"
       sha="$(apps_checkout "$dir/build/$name" "$url" "$ref" "$token")"
-      say "$name: ${sha:0:7} of $url"
-      built+="$name "
-      apps="$(awk -v n="$name" -v src="$url@${sha:0:7}" '$1 == n { $4 = src } { print }' <<<"$apps")"
+      fetched+="$name "
+      image="$(awk -v n="$name" '$1 == n { print $4 }' <<<"$apps")"
+      if prebuilt="$(apps_prebuilt "$image" "$dir/build/$name" "$sha")"; then
+        say "$name: ${sha:0:7} of $url, published as $prebuilt"
+      else
+        say "$name: ${sha:0:7} of $url, no published image of it; building it here"
+        built+="$name "
+        prebuilt="$url@${sha:0:7}"
+      fi
+      apps="$(awk -v n="$name" -v src="$prebuilt" '$1 == n { $4 = src } { print }' <<<"$apps")"
     done <<<"$builds"
   fi
   if [[ -d "$dir/build" ]]; then
     for sha in "$dir"/build/*/; do
-      [[ -d "$sha" && " $built " != *" $(basename "$sha") "* ]] || continue
+      [[ -d "$sha" && " $fetched " != *" $(basename "$sha") "* ]] || continue
       rm -rf "$sha"
       info "Removed the checkout of $(basename "$sha"), which is no longer in APPS_BUILD"
     done

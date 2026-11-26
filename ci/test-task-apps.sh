@@ -97,6 +97,24 @@ assert_fails "checkout: a missing repository stops the task" apps_checkout "$co"
 assert_eq "checkout: a token never lands in the checkout" "" \
   "$(apps_checkout "$co" "file://$repo" main secret123 >/dev/null; grep -r secret123 "$co/.git" || true)"
 
+# A published image of the commit: its sha- tag, else a release tag of it.
+docker() { [[ "$1 $2" == "pull -q" ]] || return 1; echo "$3" >>"$TMP/pulls"; [[ " ${HAVE:-} " == *" $3 "* ]]; }
+co_sha="$(git -C "$repo" rev-parse main)"
+apps_checkout "$co" "file://$repo" main >/dev/null
+: >"$TMP/pulls"
+assert_eq "prebuilt: the sha- tag first" "ghcr.io/you/game:sha-${co_sha:0:7}" \
+  "$(HAVE="ghcr.io/you/game:sha-${co_sha:0:7} ghcr.io/you/game:1" apps_prebuilt ghcr.io/you/game:latest "$co" "$co_sha")"
+assert_eq "prebuilt: else the release tag of the commit, without v" "ghcr.io/you/game:1" \
+  "$(HAVE="ghcr.io/you/game:1" apps_prebuilt ghcr.io/you/game:latest "$co" "$co_sha")"
+assert_eq "prebuilt: a registry with a port, an image by digest" "reg:5000/you/game:1" \
+  "$(HAVE="reg:5000/you/game:1" apps_prebuilt "reg:5000/you/game@sha256:$(printf '0%.0s' {1..64})" "$co" "$co_sha")"
+assert_eq "prebuilt: an image without a tag" "you/game:1" "$(HAVE="you/game:1" apps_prebuilt you/game "$co" "$co_sha")"
+assert_fails "prebuilt: none published" apps_prebuilt ghcr.io/you/game:latest "$co" "$co_sha"
+: >"$TMP/pulls"
+apps_prebuilt ghcr.io/you/game:latest "$co" "$first" || true
+assert_eq "prebuilt: a commit without a release tag tries only its sha- tag" "ghcr.io/you/game:sha-${first:0:7}" "$(cat "$TMP/pulls")"
+unset -f docker
+
 # --- the compose file -----------------------------------------------------------
 out="$(apps_parse 'game:8091=ghcr.io/you/game:latest site:8092:80=you/site' | apps_compose 1234)"
 assert_contains "compose: image" 'image: "ghcr.io/you/game:latest"' "$out"
@@ -226,12 +244,15 @@ apps_checkout() { echo "checkout $*" >>"$TMP/calls"; mkdir -p "$1"; echo 1a2b3c4
 save_secret() { echo "save $*" >>"$TMP/calls"; }
 load_secret() { echo saved-token; }
 mkdir -p "$TMP/opt/apps/build/gone"
+# No published image of the commit: the registry refuses every pull.
+docker() { echo "docker $*" >>"$TMP/calls"; [[ "$1" != pull ]]; }
 ( APPS_LIST='game:8091=you/game,site:8092=you/site'; APPS_BUILD='game=https://github.com/you/game.git#main'
   APPS_BUILD_TOKEN=tok_1; run_apps ) >/dev/null 2>&1
 assert_contains "run: the token is saved" "save apps APPS_BUILD_TOKEN tok_1" "$(cat "$TMP/calls")"
 assert_contains "run: the repository is checked out with it" \
   "checkout $TMP/opt/apps/build/game https://github.com/you/game.git main tok_1" "$(cat "$TMP/calls")"
 assert_contains "run: the built app is built" "docker compose -f $compose build --pull game" "$(cat "$TMP/calls")"
+assert_contains "run: after looking for a published image of the commit" "docker pull -q you/game:sha-1a2b3c4" "$(cat "$TMP/calls")"
 assert_contains "run: its card names the commit" "App built from https://github.com/you/game.git@1a2b3c4" "$(cat "$compose")"
 assert_ok "run: a checkout no longer in APPS_BUILD is removed" test ! -e "$TMP/opt/apps/build/gone"
 assert_ok "run: the built app's checkout stays" test -d "$TMP/opt/apps/build/game"
@@ -240,6 +261,13 @@ assert_ok "run: the built app's checkout stays" test -d "$TMP/opt/apps/build/gam
 assert_contains "run: without a token the saved one is used" \
   "checkout $TMP/opt/apps/build/game https://github.com/you/game.git HEAD saved-token" "$(cat "$TMP/calls")"
 assert_eq "run: and not saved again" 0 "$(grep -c '^save' "$TMP/calls")"
+: >"$TMP/calls"
+( APPS_LIST='game:8091=you/game'; APPS_BUILD='game=https://github.com/you/game.git'
+  apps_prebuilt() { echo you/game:sha-1a2b3c4; }
+  run_apps ) >/dev/null 2>&1
+assert_eq "run: a published image of the commit is not built" 0 "$(grep -c ' build ' "$TMP/calls")"
+assert_contains "run: the app runs that image" 'image: "you/game:sha-1a2b3c4"' "$(cat "$compose")"
+assert_ok "run: its checkout stays for the next run" test -d "$TMP/opt/apps/build/game"
 : >"$TMP/calls"
 ( APPS_LIST='game:8091=you/game'; run_apps ) >/dev/null 2>&1
 assert_ok "run: out of APPS_BUILD, its checkout is removed" test ! -e "$TMP/opt/apps/build/game"

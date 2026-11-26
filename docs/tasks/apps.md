@@ -19,7 +19,7 @@ are taken down again.
 |---------|---------|---------|
 | `APPS_LIST` | empty (none) | Apps to run, as `name:port=image`, separated by spaces or commas, such as `game:8091=ghcr.io/you/game:latest`. The name (lowercase letters, digits and `-`, at least two characters with a letter; not a word or number the compose file reads differently, such as `true`, `null` or `1e3`, and not the name of another task's container, such as `pihole`) names the container and its card; the port is the app's port on the Pi (TCP), which no other container may publish. Add `:container-port` after the port when the app does not listen on 8080 inside its container: `game:8091:80=...`. An emptied list stops the apps; empty with none running, the task does nothing. |
 | `APPS_DATA` | empty (none) | Apps from `APPS_LIST` that keep data, separated by spaces or commas, such as `game`. Each gets the folder `/opt/apps/data/<name>`, owned by the apps' user and closed to everyone else, as `/data` in its container: the one place besides `/tmp` it can write, and the one that survives restarts, updates and redeploys. A name that is not in `APPS_LIST` stops the task. Taking an app out of the list keeps its folder. |
-| `APPS_BUILD` | empty (every app runs its image) | Apps from `APPS_LIST` to build on the Pi from a git repository instead of pulling their image, as `name=url#ref`, separated by spaces or commas, such as `game=https://github.com/you/game.git#main`. `url` is the repository over `https`; `ref` is a branch, a tag or a commit (7 to 40 hex digits), and without `#ref` the repository's default branch. The repository needs a `Dockerfile` at the top. The app keeps its port and settings from `APPS_LIST`; its image there is not used while it is listed here. See [Built on the Pi](#built-on-the-pi). |
+| `APPS_BUILD` | empty (every app runs its image) | Apps from `APPS_LIST` to build on the Pi from a git repository instead of pulling their image, as `name=url#ref`, separated by spaces or commas, such as `game=https://github.com/you/game.git#main`. `url` is the repository over `https`; `ref` is a branch, a tag or a commit (7 to 40 hex digits), and without `#ref` the repository's default branch. The repository needs a `Dockerfile` at the top. The app keeps its port and settings from `APPS_LIST`; its image there only names the registry where a published image of the commit is looked for first. See [Built on the Pi](#built-on-the-pi). |
 | `APPS_BUILD_TOKEN` | empty (the saved one, or none) | Token for private repositories in `APPS_BUILD`: on GitHub a fine-grained token with only **Contents: read** on them. It is saved in `/var/lib/rpi-setup/secrets/apps.env` (root only) and used by later runs that leave it empty; a new value replaces it. Public repositories need none. |
 
 ## What it installs and changes
@@ -72,10 +72,19 @@ is not released, list the app in `APPS_BUILD`. Every run then:
    it goes to the server as an HTTP header and is never written to the
    checkout;
 2. checks out the commit `ref` points to now, with nothing else in the folder;
-3. builds the image there (`docker compose build --pull`; an unchanged commit
-   comes from Docker's build cache) and recreates the app when it changed.
+3. looks for a published image of that commit in the registry of the app's
+   image in `APPS_LIST`: the tag `sha-<first 7 digits of the commit>`, as a CI
+   publishes a commit, then each release tag of the commit without its
+   leading `v` (`1.2.3` for the git tag `v1.2.3`). The first one that pulls
+   runs, and nothing is built;
+4. otherwise builds the image there (`docker compose build --pull`; an
+   unchanged commit comes from Docker's build cache) and recreates the app
+   when it changed. The card on the start page then names the repository and
+   the commit.
 
-The card on the start page names the repository and the commit. The build
+So `APPS_LIST` keeps the app's published image, such as
+`game:8091=ghcr.io/you/game:latest`, and `APPS_BUILD` only adds where its
+code lives. The build
 runs on the Pi, so it takes longer than a pull, and a Dockerfile that builds
 for another platform needs emulation; one whose build stage runs on
 `$BUILDPLATFORM` (only the last stage per platform) needs none. `update.sh`
