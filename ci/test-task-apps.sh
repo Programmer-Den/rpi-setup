@@ -10,6 +10,7 @@ set -euo pipefail
 . "$ROOT/lib/common.sh"
 TASKS=()
 . "$ROOT/tasks/apps.sh"
+apps_build_dir() { echo "$TMP/cache/apps"; }
 
 # --- APPS_LIST ------------------------------------------------------------------
 assert_eq "list: one app, container port 8080 by default" "game 8091 8080 ghcr.io/you/game:latest" \
@@ -142,13 +143,13 @@ fi
 
 out="$(printf '%s\n' 'game 8091 8080 https://github.com/you/game.git@1a2b3c4' 'site 8092 8080 you/site' | apps_compose 1234 '' 'game')"
 game="$(sed -n '/^  game:/,/^  site:/p' <<<"$out")"
-assert_contains "compose: a built app has its checkout as build context" 'context: "./build/game"' "$game"
+assert_contains "compose: a built app has its checkout as build context" "context: \"$TMP/cache/apps/game\"" "$game"
 assert_eq "compose: a built app has no image to pull" 0 "$(grep -c 'image:' <<<"$game")"
 assert_contains "compose: a built app's card names the source" 'App built from https://github.com/you/game.git@1a2b3c4' "$game"
 assert_contains "compose: the other app keeps its image" 'image: "you/site"' "$out"
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   printf '%s\n' "$out" >"$TMP/docker-compose.yml"
-  mkdir -p "$TMP/build/game"
+  mkdir -p "$TMP/cache/apps/game"
   assert_ok "compose: docker compose accepts a built app" docker compose -f "$TMP/docker-compose.yml" config -q
 else
   skip "compose: docker compose not installed"
@@ -243,23 +244,23 @@ assert_contains "run: APPS_BUILD naming an app not in APPS_LIST stops the task" 
 apps_checkout() { echo "checkout $*" >>"$TMP/calls"; mkdir -p "$1"; echo 1a2b3c4d5e6f1a2b3c4d5e6f1a2b3c4d5e6f1a2b; }
 save_secret() { echo "save $*" >>"$TMP/calls"; }
 load_secret() { echo saved-token; }
-mkdir -p "$TMP/opt/apps/build/gone"
+mkdir -p "$TMP/cache/apps/gone"
 # No published image of the commit: the registry refuses every pull.
 docker() { echo "docker $*" >>"$TMP/calls"; [[ "$1" != pull ]]; }
 ( APPS_LIST='game:8091=you/game,site:8092=you/site'; APPS_BUILD='game=https://github.com/you/game.git#main'
   APPS_BUILD_TOKEN=tok_1; run_apps ) >/dev/null 2>&1
 assert_contains "run: the token is saved" "save apps APPS_BUILD_TOKEN tok_1" "$(cat "$TMP/calls")"
 assert_contains "run: the repository is checked out with it" \
-  "checkout $TMP/opt/apps/build/game https://github.com/you/game.git main tok_1" "$(cat "$TMP/calls")"
+  "checkout $TMP/cache/apps/game https://github.com/you/game.git main tok_1" "$(cat "$TMP/calls")"
 assert_contains "run: the built app is built" "docker compose -f $compose build --pull game" "$(cat "$TMP/calls")"
 assert_contains "run: after looking for a published image of the commit" "docker pull -q you/game:sha-1a2b3c4" "$(cat "$TMP/calls")"
 assert_contains "run: its card names the commit" "App built from https://github.com/you/game.git@1a2b3c4" "$(cat "$compose")"
-assert_ok "run: a checkout no longer in APPS_BUILD is removed" test ! -e "$TMP/opt/apps/build/gone"
-assert_ok "run: the built app's checkout stays" test -d "$TMP/opt/apps/build/game"
+assert_ok "run: a checkout no longer in APPS_BUILD is removed" test ! -e "$TMP/cache/apps/gone"
+assert_ok "run: the built app's checkout stays" test -d "$TMP/cache/apps/game"
 : >"$TMP/calls"
 ( APPS_LIST='game:8091=you/game'; APPS_BUILD='game=https://github.com/you/game.git'; run_apps ) >/dev/null 2>&1
 assert_contains "run: without a token the saved one is used" \
-  "checkout $TMP/opt/apps/build/game https://github.com/you/game.git HEAD saved-token" "$(cat "$TMP/calls")"
+  "checkout $TMP/cache/apps/game https://github.com/you/game.git HEAD saved-token" "$(cat "$TMP/calls")"
 assert_eq "run: and not saved again" 0 "$(grep -c '^save' "$TMP/calls")"
 : >"$TMP/calls"
 ( APPS_LIST='game:8091=you/game'; APPS_BUILD='game=https://github.com/you/game.git'
@@ -267,10 +268,10 @@ assert_eq "run: and not saved again" 0 "$(grep -c '^save' "$TMP/calls")"
   run_apps ) >/dev/null 2>&1
 assert_eq "run: a published image of the commit is not built" 0 "$(grep -c ' build ' "$TMP/calls")"
 assert_contains "run: the app runs that image" 'image: "you/game:sha-1a2b3c4"' "$(cat "$compose")"
-assert_ok "run: its checkout stays for the next run" test -d "$TMP/opt/apps/build/game"
+assert_ok "run: its checkout stays for the next run" test -d "$TMP/cache/apps/game"
 : >"$TMP/calls"
 ( APPS_LIST='game:8091=you/game'; run_apps ) >/dev/null 2>&1
-assert_ok "run: out of APPS_BUILD, its checkout is removed" test ! -e "$TMP/opt/apps/build/game"
+assert_ok "run: out of APPS_BUILD, its checkout is removed" test ! -e "$TMP/cache/apps/game"
 assert_eq "run: and nothing is built" 0 "$(grep -c ' build ' "$TMP/calls")"
 assert_contains "run: the app runs its image again" 'image: "you/game"' "$(cat "$compose")"
 

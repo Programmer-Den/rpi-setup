@@ -67,8 +67,9 @@ this task through the [runner](runner.md)'s Deploy workflow with
 For a version that has no image, such as the newest commit of a branch that
 is not released, list the app in `APPS_BUILD`. Every run then:
 
-1. fetches the repository into `/opt/apps/build/<name>` (root only): the full
-   history, but file contents only for the commit it checks out. With a token,
+1. fetches the repository into `/var/cache/rpi-setup/apps/<name>` (root only;
+   not in `/opt/apps`, so the `backup` task leaves it out): the full history,
+   but file contents only for the commit it checks out. With a token,
    it goes to the server as an HTTP header and is never written to the
    checkout;
 2. checks out the commit `ref` points to now, with nothing else in the folder;

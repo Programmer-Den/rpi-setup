@@ -8,6 +8,10 @@ set -euo pipefail
 
 TASKS+=("apps|Your own web apps from container images, each with a card on the start page")
 
+# Folder of the checkouts of the apps in APPS_BUILD, one folder per app. Not under /opt/apps,
+# which the backup task archives every night: a checkout is fetched again.
+apps_build_dir() { echo /var/cache/rpi-setup/apps; }
+
 # Containers the other rpi-setup tasks run; an app cannot take their names.
 apps_reserved_names='pihole samba teamspeak teamspeak-usage netalertx web den-watcher gateway'
 
@@ -143,7 +147,7 @@ apps_prebuilt() {
   local -a tags=("sha-${sha:0:7}")
   while read -r tag; do
     tag="${tag#v}"
-    [[ "$tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] && tags+=("$tag")
+    if [[ "$tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then tags+=("$tag"); fi
   done < <(git -C "$dir" tag --points-at "$sha" 2>/dev/null)
   for tag in "${tags[@]}"; do
     if docker pull -q "$repo:$tag" >/dev/null 2>&1; then
@@ -161,14 +165,14 @@ apps_prebuilt() {
 # only /tmp writable (in memory), so it keeps nothing between restarts; an app
 # named in DATA (space separated) also gets its folder under DIR/data as /data.
 # An app named in BUILT (space separated) is built on the Pi from its checkout
-# DIR/build/<name>; its "image" is then the source shown on its card.
+# $(apps_build_dir)/<name>; its "image" is then the source shown on its card.
 apps_compose() {
   local uid="$1" data=" ${2:-} " built=" ${3:-} " name port cport image from
   echo 'services:'
   while read -r name port cport image; do
     if [[ "$built" == *" $name "* ]]; then
       from="App built from $image"
-      printf '  %s:\n    build:\n      context: "./build/%s"\n' "$name" "$name"
+      printf '  %s:\n    build:\n      context: "%s/%s"\n' "$name" "$(apps_build_dir)" "$name"
     else
       from="App from $image"
       printf '  %s:\n    image: "%s"\n' "$name" "$image"
@@ -264,12 +268,13 @@ run_apps() {
     install -m 0700 -o "$uid" -g "$uid" -d "$dir/data/$name"
   done
 
-  # Apps from git: each repository is checked out in DIR/build/<name> (root
-  # only). When the registry of the app's image in APPS_LIST already has an
+  # Apps from git: each repository is checked out in $(apps_build_dir)/<name>
+  # (root only). When the registry of the app's image in APPS_LIST already has an
   # image of that commit, the app runs it; otherwise the checkout is the
   # build's context and the app is built here, its card naming the commit.
   # Checkouts of apps no longer in APPS_BUILD are removed.
-  local built="" fetched="" url ref sha prebuilt
+  local built="" fetched="" url ref sha prebuilt builddir
+  builddir="$(apps_build_dir)"
   if [[ -n "$builds" ]]; then
     if [[ -n "$token" ]]; then
       save_secret apps APPS_BUILD_TOKEN "$token"
@@ -277,13 +282,13 @@ run_apps() {
       token="$(load_secret apps APPS_BUILD_TOKEN)" || token=""
     fi
     have git || apt_install git
-    install -m 0700 -d "$dir/build"
+    install -m 0700 -d "$builddir"
     while read -r name url ref; do
       info "Fetching $name from $url ($ref)"
-      sha="$(apps_checkout "$dir/build/$name" "$url" "$ref" "$token")"
+      sha="$(apps_checkout "$builddir/$name" "$url" "$ref" "$token")" || exit 1
       fetched+="$name "
       image="$(awk -v n="$name" '$1 == n { print $4 }' <<<"$apps")"
-      if prebuilt="$(apps_prebuilt "$image" "$dir/build/$name" "$sha")"; then
+      if prebuilt="$(apps_prebuilt "$image" "$builddir/$name" "$sha")"; then
         say "$name: ${sha:0:7} of $url, published as $prebuilt"
       else
         say "$name: ${sha:0:7} of $url, no published image of it; building it here"
@@ -293,10 +298,10 @@ run_apps() {
       apps="$(awk -v n="$name" -v src="$prebuilt" '$1 == n { $4 = src } { print }' <<<"$apps")"
     done <<<"$builds"
   fi
-  if [[ -d "$dir/build" ]]; then
-    for sha in "$dir"/build/*/; do
+  if [[ -d "$builddir" ]]; then
+    for sha in "$builddir"/*/; do
       [[ -d "$sha" && " $fetched " != *" $(basename "$sha") "* ]] || continue
-      rm -rf "$sha"
+      rm -rf "${sha:?}"
       info "Removed the checkout of $(basename "$sha"), which is no longer in APPS_BUILD"
     done
   fi
